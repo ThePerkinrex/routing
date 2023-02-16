@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::tcp_ip::Payload;
+use crate::{link::Link, tcp_ip::Payload};
 use barrage::{Disconnected, SendError};
 use tracing::trace;
 
@@ -68,17 +68,27 @@ impl<P: Payload<1500> + Clone + Unpin> EthernetLink<P> {
     pub const fn get_addr(&self) -> PhysicalAddr {
         self.addr
     }
+}
 
-    // pub fn recv(&self) -> Result<P, Disconnected> {
-    //     loop {
-    //         let packet = self.net.rx.recv()?;
-    //         if packet.dest == self.addr {
-    //             return Ok(packet.payload);
-    //         }
-    //     }
-    // }
+impl<P: Payload<1500> + Clone + Unpin> Link for EthernetLink<P> {
+    type Addr = PhysicalAddr;
 
-    pub fn try_recv(&self) -> Result<Option<P>, Disconnected> {
+    type Packet = P;
+
+    type RecvError = Disconnected;
+
+    type SendError = SendError<P>;
+
+    fn recv(&self) -> Result<P, Disconnected> {
+        loop {
+            let packet = self.net.rx.recv()?;
+            if packet.dest == self.addr {
+                return Ok(packet.payload);
+            }
+        }
+    }
+
+    fn try_recv(&self) -> Result<Option<P>, Disconnected> {
         loop {
             let packet = self.net.rx.try_recv()?;
             if let Some(packet) = packet {
@@ -91,7 +101,7 @@ impl<P: Payload<1500> + Clone + Unpin> EthernetLink<P> {
         }
     }
 
-    pub fn send(&self, packet: P, dest: PhysicalAddr) -> Result<(), barrage::SendError<P>> {
+    fn send(&self, packet: P, dest: PhysicalAddr) -> Result<(), barrage::SendError<P>> {
         trace!("Sending eth packet from {} to {dest}", self.addr);
         let packet = Ethernet {
             origin: self.addr,
@@ -102,5 +112,9 @@ impl<P: Payload<1500> + Clone + Unpin> EthernetLink<P> {
             .tx
             .send(packet)
             .map_err(|SendError(err)| SendError(err.payload))
+    }
+
+    fn get_addr(&self) -> Self::Addr {
+        self.get_addr()
     }
 }

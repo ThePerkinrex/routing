@@ -1,13 +1,15 @@
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     ethernet::{EthernetNet, PhysicalAddr},
-    ip::{IPv4, Ip},
+    ip::IPv4,
+    link::Link,
     router::Router,
 };
 
 mod ethernet;
 mod ip;
+mod link;
 mod router;
 mod tcp_ip;
 
@@ -36,105 +38,65 @@ fn main() {
         (ip_b, mask_match_all, 0, link_b.get_addr()),
         (ip_c, mask_match_all, 1, link_c.get_addr()),
     ];
-    let (stop_tx, join_handle) = Router::<&[u8], IPv4>::new(
+
+    let ipv4_mask_any = IPv4::new([0, 0, 0, 0]);
+
+    let device_a =
+        Router::<&[u8], IPv4>::new_simple(link_a, net1_gateway, ipv4_mask_any, ipv4_mask_any, ip_a)
+            .start();
+    let device_b =
+        Router::<&[u8], IPv4>::new_simple(link_b, net1_gateway, ipv4_mask_any, ipv4_mask_any, ip_b)
+            .start();
+    let device_c =
+        Router::<&[u8], IPv4>::new_simple(link_c, net2_gateway, ipv4_mask_any, ipv4_mask_any, ip_c)
+            .start();
+
+    let router = Router::<&[u8], IPv4>::new(
         vec![link_router_net1, link_router_net2],
         routing_table,
         ip_router,
     )
     .start();
 
-    link_a
-        .send(
-            Ip {
-                origin: ip_a,
-                dest: ip_b,
-                payload: &[0],
-            },
-            net1_gateway,
-        )
-        .unwrap();
+    device_a.send(&[0], ip_b).unwrap();
 
-    link_a
-        .send(
-            Ip {
-                origin: ip_a,
-                dest: ip_c,
-                payload: &[1],
-            },
-            net1_gateway,
-        )
-        .unwrap();
+    device_a.send(&[1], ip_c).unwrap();
 
-    link_c
-        .send(
-            Ip {
-                origin: ip_c,
-                dest: ip_c,
-                payload: &[2],
-            },
-            net2_gateway,
-        )
-        .unwrap();
+    device_c.send(&[2], ip_a).unwrap();
 
-    link_c
-        .send(
-            Ip {
-                origin: ip_c,
-                dest: ip_b,
-                payload: &[3],
-            },
-            net2_gateway,
-        )
-        .unwrap();
+    device_c.send(&[3], ip_b).unwrap();
 
-    link_c
-        .send(
-            Ip {
-                origin: ip_c,
-                dest: ip_c,
-                payload: &[4],
-            },
-            net2_gateway,
-        )
-        .unwrap();
+    device_c.send(&[4], ip_c).unwrap();
 
-    link_b
-        .send(
-            Ip {
-                origin: ip_b,
-                dest: ip_a,
-                payload: &[5],
-            },
-            net1_gateway,
-        )
-        .unwrap();
+    device_b.send(&[5], ip_a).unwrap();
 
-    link_b
-        .send(
-            Ip {
-                origin: ip_b,
-                dest: ip_router,
-                payload: &[6, 9],
-            },
-            net1_gateway,
-        )
-        .unwrap();
+    device_b.send(&[6, 9], ip_router).unwrap();
 
-    println!("a {ip_a} {}:", link_a.get_addr());
-    while let Ok(Some(packet)) = link_a.try_recv() {
+    debug!("Sleeping for 5 seconds to allow for packets to arrive");
+    std::thread::sleep(std::time::Duration::from_secs(5));
+
+    println!("a {ip_a}:");
+    while let Ok(Some(packet)) = device_a.try_recv() {
         println!("{packet:?}")
     }
-    println!("b {ip_b} {}:", link_b.get_addr());
-    while let Ok(Some(packet)) = link_b.try_recv() {
+    println!("b {ip_b}:");
+    while let Ok(Some(packet)) = device_b.try_recv() {
         println!("{packet:?}")
     }
-    println!("c {ip_c} {}:", link_c.get_addr());
-    while let Ok(Some(packet)) = link_c.try_recv() {
+    println!("c {ip_c}:");
+    while let Ok(Some(packet)) = device_c.try_recv() {
+        println!("{packet:?}")
+    }
+
+    println!("router {ip_router}:");
+    while let Ok(Some(packet)) = router.try_recv() {
         println!("{packet:?}")
     }
 
     info!("Stopping router");
-    stop_tx.send(()).unwrap();
-    let _router = join_handle.join().unwrap();
+    device_a.stop().unwrap();
+    device_b.stop().unwrap();
+    device_c.stop().unwrap();
+    router.stop().unwrap();
     info!("Stopped router");
 }
