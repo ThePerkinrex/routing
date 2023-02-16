@@ -1,7 +1,24 @@
+use std::fmt::Display;
+
 use crate::tcp_ip::Payload;
 use barrage::{Disconnected, SendError};
+use tracing::trace;
 
-pub type PhysicalAddr = [u8; 6];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalAddr([u8; 6]);
+
+impl PhysicalAddr {
+    pub const fn new(octets: [u8; 6]) -> Self {
+        Self(octets)
+    }
+}
+
+impl Display for PhysicalAddr {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [a, b, c, d, e, f] = self.0;
+        write!(fmt, "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}")
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ethernet<P>
@@ -48,6 +65,10 @@ pub struct EthernetLink<P: Payload<1500> + Clone + Unpin> {
 }
 
 impl<P: Payload<1500> + Clone + Unpin> EthernetLink<P> {
+    pub const fn get_addr(&self) -> PhysicalAddr {
+        self.addr
+    }
+
     // pub fn recv(&self) -> Result<P, Disconnected> {
     //     loop {
     //         let packet = self.net.rx.recv()?;
@@ -71,6 +92,7 @@ impl<P: Payload<1500> + Clone + Unpin> EthernetLink<P> {
     }
 
     pub fn send(&self, packet: P, dest: PhysicalAddr) -> Result<(), barrage::SendError<P>> {
+        trace!("Sending eth packet from {} to {dest}", self.addr);
         let packet = Ethernet {
             origin: self.addr,
             dest,

@@ -49,24 +49,3 @@ where
         todo!()
     }
 }
-
-pub type IpAddr = u32;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ip<P>
-where
-    P: Payload<1480>,
-{
-    pub origin: IpAddr,
-    pub dest: IpAddr,
-    pub payload: P,
-}
-
-impl<P> Payload<1500> for Ip<P>
-where
-    P: Payload<1480>,
-{
-    fn as_bytes(&self) -> Vec<u8> {
-        todo!()
-    }
-}
