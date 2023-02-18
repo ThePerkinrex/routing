@@ -206,6 +206,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "routing"
+version = "0.1.0"
+dependencies = [
+ "barrage",
+ "flume",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -244,16 +254,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "tcp_ip"
-version = "0.1.0"
-dependencies = [
- "barrage",
- "flume",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
