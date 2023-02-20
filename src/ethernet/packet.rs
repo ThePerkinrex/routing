@@ -61,6 +61,10 @@ impl EthernetPacket {
         }
     }
 
+    pub const fn get_dest(&self) -> Mac {
+        self.destination
+    }
+
     pub fn to_vec(&self) -> Vec<u8> {
         let mut vec = Vec::with_capacity(14 + self.payload.len());
         vec.extend_from_slice(self.destination.as_slice());

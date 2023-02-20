@@ -37,7 +37,7 @@ async fn main() {
                 let _ = sender
                     .send_async(chassis::NetworkLinkMessage::Message(
                         chassis::NetworkLayerId::Ipv4,
-                        Mac::new([0, 0x69, 0x69, 0, 0, 0]),
+                        mac::BROADCAST,
                         vec![69],
                     ))
                     .await;

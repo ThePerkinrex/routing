@@ -96,7 +96,10 @@ impl Chassis {
                         Some(Ok(Either::Left((eth_packet, rx)))) => {
                             match eth_packet {
                                 Ok(eth_packet) => {
-                                    trace!("NIC {} recieved packet: {:?}", addr, eth_packet);
+									let dest = eth_packet.get_dest();
+									if dest == addr || dest.is_multicast() {
+										trace!("NIC {} recieved packet from: {:?}", addr, eth_packet);
+									}
                                 }
                                 Err(_) => warn!("Error recieving eth packet: Disconnected"),
                             };
