@@ -19,3 +19,25 @@ impl<P: Clone + Unpin> DuplexBarrage<P> {
         }
     }
 }
+
+// #[derive(Clone)]
+// pub struct DuplexFlume<P> {
+//     pub tx: flume::Sender<P>,
+//     pub rx: flume::Receiver<P>,
+// }
+
+// impl<P> DuplexFlume<P> {
+//     pub fn bounded(bound: usize) -> Self {
+//         let (tx, rx) = flume::bounded(bound);
+//         Self {
+//             tx, rx
+//         }
+//     }
+
+//     pub fn unbounded() -> Self {
+//         let (tx, rx) = flume::unbounded();
+//         Self {
+//             tx, rx
+//         }
+//     }
+// }

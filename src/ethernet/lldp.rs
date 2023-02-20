@@ -50,12 +50,14 @@ pub fn build_lldp_packet(chassis_id: Vec<u8>, port_id: Vec<u8>, time_to_live: Ve
 	let chassis = TypeLengthValue::new(TlvType::ChassisId, chassis_id).unwrap();
 	let port = TypeLengthValue::new(TlvType::PortId, port_id).unwrap();
 	let ttl = TypeLengthValue::new(TlvType::TimeToLive, time_to_live).unwrap();
+	let end = TypeLengthValue::new(TlvType::End, vec![]).unwrap();
 	res.extend_from_slice(&chassis.to_vec());
 	res.extend_from_slice(&port.to_vec());
 	res.extend_from_slice(&ttl.to_vec());
 	for tlv in tlvs {
 		res.extend_from_slice(&tlv.to_vec());
 	}
+	res.extend_from_slice(&end.to_vec());
 	LLDPPacket(res)
 }
 

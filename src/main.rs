@@ -5,6 +5,7 @@ use crate::mac::authority::MacAdminAuthority;
 mod duplex_conn;
 mod ethernet;
 mod mac;
+mod chassis;
 
 #[tokio::main]
 async fn main() {
