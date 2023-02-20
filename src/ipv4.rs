@@ -1,2 +1,2 @@
-pub mod nic;
+pub mod addr;
 pub mod packet;

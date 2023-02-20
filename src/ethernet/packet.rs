@@ -1,7 +1,5 @@
 use crate::mac::Mac;
 
-use super::lldp::LLDPPacket;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetPacket {
     destination: Mac,
@@ -11,7 +9,7 @@ pub struct EthernetPacket {
 }
 
 impl EthernetPacket {
-    pub(super) fn new_generic(destination: Mac, source: Mac, payload: Vec<u8>) -> Option<Self> {
+    pub fn new_generic(destination: Mac, source: Mac, payload: Vec<u8>) -> Option<Self> {
         if payload.len() <= 1500 {
             Some(Self {
                 destination,
@@ -24,7 +22,7 @@ impl EthernetPacket {
         }
     }
 
-    pub(super) fn new_ip_v4(destination: Mac, source: Mac, payload: Vec<u8>) -> Option<Self> {
+    pub fn new_ip_v4(destination: Mac, source: Mac, payload: Vec<u8>) -> Option<Self> {
         if payload.len() <= 1500 {
             Some(Self {
                 destination,
@@ -37,7 +35,7 @@ impl EthernetPacket {
         }
     }
 
-    pub(super) fn new_ip_v6(destination: Mac, source: Mac, payload: Vec<u8>) -> Option<Self> {
+    pub fn new_ip_v6(destination: Mac, source: Mac, payload: Vec<u8>) -> Option<Self> {
         if payload.len() <= 1500 {
             Some(Self {
                 destination,
@@ -50,12 +48,12 @@ impl EthernetPacket {
         }
     }
 
-    pub(super) fn new_lldp(destination: Mac, source: Mac, LLDPPacket(payload): LLDPPacket) -> Option<Self> {
+    pub fn new_arp(destination: Mac, source: Mac, payload: Vec<u8>) -> Option<Self> {
         if payload.len() <= 1500 {
             Some(Self {
                 destination,
                 source,
-                ether_type: 0x88CC,
+                ether_type: 0x0806,
                 payload,
             })
         } else {
@@ -63,12 +61,12 @@ impl EthernetPacket {
         }
     }
 
-	pub fn to_vec(&self) -> Vec<u8> {
-		let mut vec = Vec::with_capacity(14 + self.payload.len());
-		vec.extend_from_slice(self.destination.as_slice());
-		vec.extend_from_slice(self.source.as_slice());
-		vec.extend_from_slice(&self.ether_type.to_be_bytes());
-		vec.extend_from_slice(&self.payload);
-		vec
-	}
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut vec = Vec::with_capacity(14 + self.payload.len());
+        vec.extend_from_slice(self.destination.as_slice());
+        vec.extend_from_slice(self.source.as_slice());
+        vec.extend_from_slice(&self.ether_type.to_be_bytes());
+        vec.extend_from_slice(&self.payload);
+        vec
+    }
 }
