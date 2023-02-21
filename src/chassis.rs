@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
 
 use barrage::Disconnected;
 use either::Either;
@@ -26,26 +26,36 @@ pub enum NetworkLayerId {
     Arp,
 }
 
-pub enum NetworkLinkMessage<SenderId, ReceiverId> {
-    NewConn(SenderId, Sender<NetworkLinkMessage<ReceiverId, SenderId>>),
-    Message(SenderId, Mac, Vec<u8>),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportLayerId {
+    Tcp,
+    Udp,
 }
+
+pub enum ProcessMessage<SenderId, ReceiverId, Payload> {
+    NewConn(SenderId, Sender<ProcessMessage<ReceiverId, SenderId, Payload>>),
+    Message(SenderId, Payload),
+}
+
+type LinkNetworkPayload = (Mac, Vec<u8>);
+
+type LinkLayerProcessHandle = (
+    JoinHandle<()>,
+    Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
+);
+
+type MidLayerProcessHandle<DownId, Id, UpId, DownPayload, UpPayload> = (
+    JoinHandle<()>,
+    Sender<ProcessMessage<DownId, Id, DownPayload>>,
+    Sender<ProcessMessage<UpId, Id, UpPayload>>,
+);
 
 #[derive(Debug, Default)]
 pub struct Chassis {
-    link_layer_processes: HashMap<
-        LinkLayerId,
-        (
-            JoinHandle<()>,
-            Sender<NetworkLinkMessage<NetworkLayerId, LinkLayerId>>,
-        ),
-    >,
+    link_layer_processes: HashMap<LinkLayerId, LinkLayerProcessHandle>,
     network_layer_processes: HashMap<
         NetworkLayerId,
-        (
-            JoinHandle<()>,
-            Sender<NetworkLinkMessage<LinkLayerId, NetworkLayerId>>,
-        ),
+        MidLayerProcessHandle<LinkLayerId, NetworkLayerId, TransportLayerId, LinkNetworkPayload, ()>,
     >,
 }
 
@@ -54,7 +64,7 @@ impl Chassis {
         Self::default()
     }
 
-    pub fn add_link_layer_process<
+    fn add_link_layer_process<
         F: FnOnce(LinkProcessUpLink) -> Fut,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     >(
@@ -69,12 +79,11 @@ impl Chassis {
                 tx: self
                     .network_layer_processes
                     .iter()
-                    .map(|(k, (_, v))| (*k, v.clone()))
+                    .map(|(k, (_, v, _))| (*k, v.clone()))
                     .collect::<HashMap<_, _>>(),
-                id,
             };
-            for (_, sender) in self.network_layer_processes.values() {
-                let _ = sender.send(NetworkLinkMessage::NewConn(id, tx.clone()));
+            for (_, sender, _) in self.network_layer_processes.values() {
+                let _ = sender.send(ProcessMessage::NewConn(id, tx.clone()));
             }
             let handle = tokio::spawn(f(link));
             (handle, tx)
@@ -94,60 +103,67 @@ impl Chassis {
                 loop {
                     match join_set.join_next().await {
                         Some(Ok(Either::Left((eth_packet, rx)))) => {
-                            match eth_packet {
-                                Ok(eth_packet) => {
-									let dest = eth_packet.get_dest();
-									if dest == addr || dest.is_multicast() {
-										trace!("NIC {} recieved packet from: {:?}", addr, eth_packet);
-									}
-                                }
-                                Err(_) => warn!("Error recieving eth packet: Disconnected"),
-                            };
+                            eth_packet.map_or_else(
+                                |_| warn!("Error recieving eth packet: Disconnected"),
+                                |eth_packet| {
+                                    let dest = eth_packet.get_dest();
+                                    if dest == addr || dest.is_multicast() {
+                                        trace!(
+                                            "NIC {} recieved packet from: {:?}",
+                                            addr,
+                                            eth_packet
+                                        );
+                                    }
+                                },
+                            );
                             join_set
                                 .spawn(async move { Either::Left((rx.recv_async().await, rx)) });
                         }
-						Some(Ok(Either::Right((up_link_msg, rx)))) => {
-							match up_link_msg {
-								Ok(up_link_msg) => match up_link_msg {
-									NetworkLinkMessage::NewConn(upper_id, sender) => {
-										up_link.tx.insert(upper_id, sender);
-									}
-									NetworkLinkMessage::Message(id, dest, payload) => match id {
-										NetworkLayerId::Ipv4 => {
-											trace!("Transmitting ipv4 packet");
-											match EthernetPacket::new_ip_v4(dest, addr, payload) {
-												Some(packet) => {
-													let _ = tx.send_async(packet).await;
-												}
-												None => warn!("Error building ethernet ipv4 packet"),
-											}
-										}
-										NetworkLayerId::Ipv6 => {
-											match EthernetPacket::new_ip_v6(dest, addr, payload) {
-												Some(packet) => {
-													let _ = tx.send_async(packet).await;
-												}
-												None => warn!("Error building ethernet ipv6 packet"),
-											}
-										}
-										NetworkLayerId::Arp => {
-											match EthernetPacket::new_arp(dest, addr, payload) {
-												Some(packet) => {
-													let _ = tx.send_async(packet).await;
-												}
-												None => warn!("Error building ethernet ARP packet"),
-											}
-										}
-									},
-								}
-								Err(e) => warn!("Down link packet error: {e:?}"),
-							}
-							join_set.spawn(async move {
-								Either::Right((rx.recv_async().await, rx))
-							});
-						}
-						Some(Err(e)) => warn!("join error: {e:?}"),
-						None => ()
+                        Some(Ok(Either::Right((up_link_msg, rx)))) => {
+                            match up_link_msg {
+                                Ok(up_link_msg) => match up_link_msg {
+                                    ProcessMessage::NewConn(upper_id, sender) => {
+                                        up_link.tx.insert(upper_id, sender);
+                                    }
+                                    ProcessMessage::Message(id, (dest, payload)) => match id {
+                                        NetworkLayerId::Ipv4 => {
+                                            trace!("Transmitting ipv4 packet");
+                                            match EthernetPacket::new_ip_v4(dest, addr, payload) {
+                                                Some(packet) => {
+                                                    let _ = tx.send_async(packet).await;
+                                                }
+                                                None => {
+                                                    warn!("Error building ethernet ipv4 packet")
+                                                }
+                                            }
+                                        }
+                                        NetworkLayerId::Ipv6 => {
+                                            match EthernetPacket::new_ip_v6(dest, addr, payload) {
+                                                Some(packet) => {
+                                                    let _ = tx.send_async(packet).await;
+                                                }
+                                                None => {
+                                                    warn!("Error building ethernet ipv6 packet")
+                                                }
+                                            }
+                                        }
+                                        NetworkLayerId::Arp => {
+                                            match EthernetPacket::new_arp(dest, addr, payload) {
+                                                Some(packet) => {
+                                                    let _ = tx.send_async(packet).await;
+                                                }
+                                                None => warn!("Error building ethernet ARP packet"),
+                                            }
+                                        }
+                                    },
+                                },
+                                Err(e) => warn!("Down link packet error: {e:?}"),
+                            }
+                            join_set
+                                .spawn(async move { Either::Right((rx.recv_async().await, rx)) });
+                        }
+                        Some(Err(e)) => warn!("join error: {e:?}"),
+                        None => (),
                     }
                     tokio::task::yield_now().await
                 }
@@ -156,48 +172,100 @@ impl Chassis {
     }
 
     pub fn add_network_layer_process<
-        F: FnOnce(NetworkProcessDownLink) -> Fut,
+        F: FnOnce(NetworkProcessDownLink, NetworkProcessUpLink) -> Fut,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     >(
         &mut self,
         id: NetworkLayerId,
         f: F,
     ) {
-        self.network_layer_processes.entry(id).or_insert_with(|| {
-            let (tx, rx) = flume::unbounded();
-            let link = ChassisInProcessLink {
-                rx,
-                tx: self
-                    .link_layer_processes
-                    .iter()
-                    .map(|(k, (_, v))| (*k, v.clone()))
-                    .collect::<HashMap<_, _>>(),
-                id,
-            };
-            for (_, sender) in self.link_layer_processes.values() {
-                let _ = sender.send(NetworkLinkMessage::NewConn(id, tx.clone()));
-            }
-            let handle = tokio::spawn(f(link));
-            (handle, tx)
-        });
+        add_mid_level_process(id, &mut self.network_layer_processes, self
+                         .link_layer_processes
+                         .iter()
+                         .map(|(k, (_, v))| (*k, v.clone()))
+                         .collect::<HashMap<_, _>>(), HashMap::new(), f);
+        // self.network_layer_processes.entry(id).or_insert_with(|| {
+        //     let (tx_down, rx_down) = flume::unbounded();
+        //     let (tx_up, rx_up) = flume::unbounded();
+        //     let downlink = ChassisInProcessLink {
+        //         rx: rx_down,
+        //         tx: self
+        //             .link_layer_processes
+        //             .iter()
+        //             .map(|(k, (_, v))| (*k, v.clone()))
+        //             .collect::<HashMap<_, _>>(),
+        //     };
+
+        //     let uplink = ChassisInProcessLink {
+        //         rx: rx_up,
+        //         tx: HashMap::new(),
+        //     };
+        //     for (_, sender) in self.link_layer_processes.values() {
+        //         let _ = sender.send(ProcessMessage::NewConn(id, tx_down.clone()));
+        //     }
+        //     // TODO UpLink
+        //     let handle = tokio::spawn(f(downlink, uplink));
+        //     (handle, tx_down, tx_up)
+        // });
     }
 }
 
+fn add_mid_level_process<Id, UpId, DownId, DownPayload, UpPayload, F, Fut>(
+    id: Id,
+    curr_level: &mut HashMap<Id, MidLayerProcessHandle<DownId, Id, UpId, DownPayload, UpPayload>>,
+    down_map: HashMap<DownId, Sender<ProcessMessage<Id, DownId, DownPayload>>>,
+    up_map: HashMap<UpId, Sender<ProcessMessage<Id, UpId, UpPayload>>>,
+    f: F
+) where
+    Id: Clone + Eq + Hash,
+    F: FnOnce(ChassisProcessLink<Id, DownId, DownPayload>, ChassisProcessLink<Id, UpId, UpPayload>) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    curr_level.entry(id.clone()).or_insert_with(|| {
+        let (tx_down, rx_down) = flume::unbounded();
+        let (tx_up, rx_up) = flume::unbounded();
+        for sender in down_map.values() {
+            let _ = sender.send(ProcessMessage::NewConn(id.clone(), tx_down.clone()));
+        }
+        for sender in up_map.values() {
+            let _ = sender.send(ProcessMessage::NewConn(id.clone(), tx_up.clone()));
+        }
+        let downlink = ChassisInProcessLink {
+            rx: rx_down,
+            tx: down_map,
+        };
+
+        let uplink = ChassisInProcessLink {
+            rx: rx_up,
+            tx: up_map,
+        };
+        
+        let handle = tokio::spawn(f(downlink, uplink));
+        (handle, tx_down, tx_up)
+    });
+}
+
+pub type ChassisProcessLink<Id, LinkedId, Payload> = ChassisInProcessLink<LinkedId, ProcessMessage<LinkedId, Id, Payload>, ProcessMessage<Id, LinkedId, Payload>>;
+
 pub type NetworkProcessDownLink = ChassisInProcessLink<
-    NetworkLayerId,
     LinkLayerId,
-    NetworkLinkMessage<LinkLayerId, NetworkLayerId>,
-    NetworkLinkMessage<NetworkLayerId, LinkLayerId>,
->;
-pub type LinkProcessUpLink = ChassisInProcessLink<
-    LinkLayerId,
-    NetworkLayerId,
-    NetworkLinkMessage<NetworkLayerId, LinkLayerId>,
-    NetworkLinkMessage<LinkLayerId, NetworkLayerId>,
+    ProcessMessage<LinkLayerId, NetworkLayerId, LinkNetworkPayload>,
+    ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>,
 >;
 
-pub struct ChassisInProcessLink<Id, LinkedId, RecvMsg, SendMsg> {
+pub type NetworkProcessUpLink = ChassisInProcessLink<
+    TransportLayerId,
+    ProcessMessage<TransportLayerId, NetworkLayerId, ()>,
+    ProcessMessage<NetworkLayerId, TransportLayerId, ()>,
+>;
+
+pub type LinkProcessUpLink = ChassisInProcessLink<
+    NetworkLayerId,
+    ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>,
+    ProcessMessage<LinkLayerId, NetworkLayerId, LinkNetworkPayload>,
+>;
+
+pub struct ChassisInProcessLink<LinkedId, RecvMsg, SendMsg> {
     pub rx: Receiver<RecvMsg>,
     pub tx: HashMap<LinkedId, Sender<SendMsg>>,
-    pub id: Id,
 }

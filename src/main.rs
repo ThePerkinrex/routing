@@ -31,14 +31,14 @@ async fn main() {
     chassis_b.add_nic_with_id(LinkLayerId::Ethernet(0), nic_b);
     chassis_a.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
-        move |down_link| async move {
+        move |down_link, up_link| async move {
             for (id, sender) in down_link.tx.iter() {
                 trace!("Sending message through interface {id:?}");
                 let _ = sender
-                    .send_async(chassis::NetworkLinkMessage::Message(
+                    .send_async(chassis::ProcessMessage::Message(
                         chassis::NetworkLayerId::Ipv4,
-                        mac::BROADCAST,
-                        vec![69],
+                        (mac::BROADCAST,
+                        vec![69]),
                     ))
                     .await;
             }
