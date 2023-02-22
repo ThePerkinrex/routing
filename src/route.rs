@@ -1,0 +1,59 @@
+// destination | gateway | mask | iface
+
+use std::ops::BitAnd;
+
+pub trait AddrMask<Addr>: BitAnd<Addr, Output = Addr> {
+    type Specifity: Ord;
+    fn specifity(&self) -> Self::Specifity;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingEntry<Addr, AddrMask, Iface> {
+    destination: Addr,
+    gateway: Addr,
+    mask: AddrMask,
+    iface: Iface,
+}
+
+pub struct RoutingTable<Addr, Mask, Iface> {
+    data: Vec<RoutingEntry<Addr, Mask, Iface>>,
+}
+
+impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
+    pub const fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    pub fn add_route(&mut self, route: RoutingEntry<Addr, Mask, Iface>)
+    where
+        Mask: AddrMask<Addr>,
+    {
+        let i = self
+            .data
+            .binary_search_by_key(&route.mask.specifity(), |entry| entry.mask.specifity())
+            .map_or_else(|i| i, |i| i);
+        self.data.insert(i, route);
+    }
+
+    pub fn remove_route(&mut self, route: &RoutingEntry<Addr, Mask, Iface>)
+    where
+        Mask: AddrMask<Addr> + Eq,
+        Addr: Eq,
+        Iface: Eq,
+    {
+        if let Some(i) =
+            self.data
+                .iter()
+                .enumerate()
+                .find_map(|(i, entry)| if entry == route { Some(i) } else { None })
+        {
+            self.data.remove(i);
+        }
+    }
+}
+
+impl<Addr, AddrMask, Iface> Default for RoutingTable<Addr, AddrMask, Iface> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

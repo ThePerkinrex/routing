@@ -9,7 +9,13 @@ pub struct Ipv4Packet {
 }
 
 impl Ipv4Packet {
-    pub fn new(destination: IpV4Addr, source: IpV4Addr, payload: Vec<u8>) -> Self { Self { destination, source, payload } }
+    pub fn new(destination: IpV4Addr, source: IpV4Addr, payload: Vec<u8>) -> Self {
+        Self {
+            destination,
+            source,
+            payload,
+        }
+    }
 
     pub fn from_vec(data: &[u8]) -> Option<Self> {
         if data.len() < 8 {
@@ -19,10 +25,10 @@ impl Ipv4Packet {
         let destination = IpV4Addr::new(data[0..4].try_into().ok()?);
         let source = IpV4Addr::new(data[4..8].try_into().ok()?);
         Some(Self {
-                    destination,
-                    source,
-                    payload: data[8..].to_vec(),
-                })
+            destination,
+            source,
+            payload: data[8..].to_vec(),
+        })
     }
 
     pub fn to_vec(&self) -> Vec<u8> {

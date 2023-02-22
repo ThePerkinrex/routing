@@ -1,11 +1,9 @@
-use std::{collections::HashMap, hash::Hash, fmt::Display};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use async_trait::async_trait;
 use either::Either;
 use flume::{Receiver, Sender};
-use tokio::{
-    task::{JoinHandle, JoinSet},
-};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{trace, warn};
 
 use crate::{
@@ -136,15 +134,12 @@ impl Chassis {
                                                 }else{
                                                     warn!(NIC = ?addr,"No IPv4 process to send packet")
                                                 }
-                                                
                                             }
                                             x => warn!(NIC = ?addr, "Unknown ether_type {x:x}")
                                         }
-                                        
                                     }
-                                } 
+                                }
                             }
-                            
                             join_set
                                 .spawn(async move { Either::Left((rx.recv_async().await, rx)) });
                         }
@@ -228,7 +223,8 @@ fn add_mid_level_process<Id, UpId, DownId, DownPayload, UpPayload, F, Fut>(
     down_map: HashMap<DownId, Sender<ProcessMessage<Id, DownId, DownPayload>>>,
     up_map: HashMap<UpId, Sender<ProcessMessage<Id, UpId, UpPayload>>>,
     f: F,
-) -> Sender<ProcessMessage<UpId, Id, UpPayload>> where
+) -> Sender<ProcessMessage<UpId, Id, UpPayload>>
+where
     Id: Clone + Eq + Hash,
     F: FnOnce(
         ChassisProcessLink<Id, DownId, DownPayload>,

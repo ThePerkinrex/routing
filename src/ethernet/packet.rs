@@ -80,16 +80,16 @@ impl EthernetPacket {
 
     pub fn from_vec(data: &[u8]) -> Option<Self> {
         if data.len() < 14 {
-            return None
+            return None;
         }
         let destination = Mac::new(data[0..6].try_into().ok()?);
         let source = Mac::new(data[6..12].try_into().ok()?);
         let ether_type = u16::from_be_bytes(data[12..14].try_into().ok()?);
         Some(Self {
-                    destination,
-                    source,
-                    ether_type,
-                    payload: data[14..].to_vec(),
-                })
+            destination,
+            source,
+            ether_type,
+            payload: data[14..].to_vec(),
+        })
     }
 }
