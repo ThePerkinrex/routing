@@ -36,7 +36,7 @@ impl Mac {
         &self.addr[0..3]
     }
 
-    pub fn as_slice(&self) -> &[u8] {
+    pub const fn as_slice(&self) -> &[u8] {
         &self.addr
     }
 }

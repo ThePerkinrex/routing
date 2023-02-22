@@ -5,7 +5,7 @@ pub struct EthernetPacket {
     destination: Mac,
     source: Mac,
     ether_type: u16,
-    payload: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 impl EthernetPacket {
@@ -65,6 +65,10 @@ impl EthernetPacket {
         self.destination
     }
 
+    pub const fn get_ether_type(&self) -> u16 {
+        self.ether_type
+    }
+
     pub fn to_vec(&self) -> Vec<u8> {
         let mut vec = Vec::with_capacity(14 + self.payload.len());
         vec.extend_from_slice(self.destination.as_slice());
@@ -72,5 +76,20 @@ impl EthernetPacket {
         vec.extend_from_slice(&self.ether_type.to_be_bytes());
         vec.extend_from_slice(&self.payload);
         vec
+    }
+
+    pub fn from_vec(data: &[u8]) -> Option<Self> {
+        if data.len() < 14 {
+            return None
+        }
+        let destination = Mac::new(data[0..6].try_into().ok()?);
+        let source = Mac::new(data[6..12].try_into().ok()?);
+        let ether_type = u16::from_be_bytes(data[12..14].try_into().ok()?);
+        Some(Self {
+                    destination,
+                    source,
+                    ether_type,
+                    payload: data[14..].to_vec(),
+                })
     }
 }

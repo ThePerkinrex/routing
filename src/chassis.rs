@@ -1,11 +1,9 @@
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, hash::Hash, fmt::Display};
 
 use async_trait::async_trait;
-use barrage::Disconnected;
 use either::Either;
 use flume::{Receiver, Sender};
 use tokio::{
-    net,
     task::{JoinHandle, JoinSet},
 };
 use tracing::{trace, warn};
@@ -18,6 +16,14 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LinkLayerId {
     Ethernet(u16),
+}
+
+impl Display for LinkLayerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ethernet(id) => write!(f, "eth{id}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -113,19 +119,32 @@ impl Chassis {
                 loop {
                     match join_set.join_next().await {
                         Some(Ok(Either::Left((eth_packet, rx)))) => {
-                            eth_packet.map_or_else(
-                                |_| warn!("Error recieving eth packet: Disconnected"),
-                                |eth_packet| {
+                            match eth_packet {
+                                Err(_) => warn!(NIC = ?addr, "Error recieving eth packet: Disconnected"),
+                                Ok(eth_packet) => {
                                     let dest = eth_packet.get_dest();
                                     if dest == addr || dest.is_multicast() {
                                         trace!(
-                                            "NIC {} recieved packet from: {:?}",
-                                            addr,
-                                            eth_packet
+                                            NIC = ?addr,
+                                            packet = ?eth_packet,
+                                            "Recieved packet"
                                         );
+                                        match eth_packet.get_ether_type() {
+                                            0x0800 => {
+                                                if let Some(sender) = up_link.tx.get(&NetworkLayerId::Ipv4) {
+                                                    let _ = sender.send_async(ProcessMessage::Message(id, (addr, eth_packet.payload))).await.map_err(|e| warn!("Cant send ipv4 packet up: {e:?}"));
+                                                }else{
+                                                    warn!(NIC = ?addr,"No IPv4 process to send packet")
+                                                }
+                                                
+                                            }
+                                            x => warn!(NIC = ?addr, "Unknown ether_type {x:x}")
+                                        }
+                                        
                                     }
-                                },
-                            );
+                                } 
+                            }
+                            
                             join_set
                                 .spawn(async move { Either::Left((rx.recv_async().await, rx)) });
                         }
@@ -137,13 +156,13 @@ impl Chassis {
                                     }
                                     ProcessMessage::Message(id, (dest, payload)) => match id {
                                         NetworkLayerId::Ipv4 => {
-                                            trace!("Transmitting ipv4 packet");
+                                            trace!(NIC = ?addr, "Transmitting ipv4 packet");
                                             match EthernetPacket::new_ip_v4(dest, addr, payload) {
                                                 Some(packet) => {
                                                     let _ = tx.send_async(packet).await;
                                                 }
                                                 None => {
-                                                    warn!("Error building ethernet ipv4 packet")
+                                                    warn!(NIC = ?addr, "Error building ethernet ipv4 packet")
                                                 }
                                             }
                                         }
@@ -153,7 +172,7 @@ impl Chassis {
                                                     let _ = tx.send_async(packet).await;
                                                 }
                                                 None => {
-                                                    warn!("Error building ethernet ipv6 packet")
+                                                    warn!(NIC = ?addr, "Error building ethernet ipv6 packet")
                                                 }
                                             }
                                         }
@@ -162,17 +181,17 @@ impl Chassis {
                                                 Some(packet) => {
                                                     let _ = tx.send_async(packet).await;
                                                 }
-                                                None => warn!("Error building ethernet ARP packet"),
+                                                None => warn!(NIC = ?addr, "Error building ethernet ARP packet"),
                                             }
                                         }
                                     },
                                 },
-                                Err(e) => warn!("Down link packet error: {e:?}"),
+                                Err(e) => warn!(NIC = ?addr, "Down link packet error: {e:?}"),
                             }
                             join_set
                                 .spawn(async move { Either::Right((rx.recv_async().await, rx)) });
                         }
-                        Some(Err(e)) => warn!("join error: {e:?}"),
+                        Some(Err(e)) => warn!(NIC = ?addr, "join error: {e:?}"),
                         None => (),
                     }
                     tokio::task::yield_now().await
