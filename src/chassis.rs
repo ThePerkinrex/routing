@@ -2,12 +2,14 @@ use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use async_trait::async_trait;
 use either::Either;
-use flume::{Receiver, Sender};
+use flume::{Receiver, RecvError, Sender};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{trace, warn};
 
 use crate::{
-    ethernet::{nic::Nic, packet::EthernetPacket, ethertype::EtherType},
+    either::ThreeWayEither,
+    ethernet::{ethertype::EtherType, nic::Nic, packet::EthernetPacket},
+    ipv4::addr::IpV4Addr,
     mac::Mac,
 };
 
@@ -46,6 +48,12 @@ pub enum ProcessMessage<SenderId, ReceiverId, Payload> {
 }
 
 pub type LinkNetworkPayload = (Mac, Vec<u8>);
+pub type NetworkTransportPayload = NetworkTransportMessage;
+
+pub enum NetworkTransportMessage {
+    IPv4(IpV4Addr, Vec<u8>),
+    // IPv6(IpV6Addr, Vec<u8>),
+}
 
 type LinkLayerProcessHandle = (
     JoinHandle<()>,
@@ -68,7 +76,7 @@ pub struct Chassis {
             NetworkLayerId,
             TransportLayerId,
             LinkNetworkPayload,
-            (),
+            NetworkTransportPayload,
         >,
     >,
 }
@@ -205,14 +213,19 @@ impl Chassis {
     }
 
     pub fn add_network_layer_process<
-        P: MidLevelProcess<NetworkLayerId, TransportLayerId, LinkLayerId, LinkNetworkPayload, ()>
-            + Send
+        P: MidLevelProcess<
+                NetworkLayerId,
+                TransportLayerId,
+                LinkLayerId,
+                LinkNetworkPayload,
+                NetworkTransportPayload,
+            > + Send
             + 'static,
     >(
         &mut self,
         id: NetworkLayerId,
         process: P,
-    ) -> Sender<ProcessMessage<TransportLayerId, NetworkLayerId, ()>> {
+    ) -> Sender<ProcessMessage<TransportLayerId, NetworkLayerId, NetworkTransportPayload>> {
         add_mid_level_process(
             id,
             &mut self.network_layer_processes,
@@ -291,14 +304,16 @@ where
         Box::pin(async move {
             let mut join_set = JoinSet::new();
             // let nic_ref = &nic;
-            join_set.spawn(
-                async move { Either::Left((down_link.rx.recv_async().await, down_link.rx)) },
-            );
-            join_set
-                .spawn(async move { Either::Right((up_link.rx.recv_async().await, up_link.rx)) });
+            join_set.spawn(async move {
+                ThreeWayEither::A((down_link.rx.recv_async().await, down_link.rx))
+            });
+            join_set.spawn(async move {
+                ThreeWayEither::B((up_link.rx.recv_async().await, up_link.rx))
+            });
+            process.setup(&mut join_set).await;
             loop {
                 match join_set.join_next().await {
-                    Some(Ok(Either::Left((down_packet, rx)))) => {
+                    Some(Ok(ThreeWayEither::A((down_packet, rx)))) => {
                         match down_packet {
                             Ok(ProcessMessage::NewConn(down_id, sender)) => {
                                 down_link.tx.insert(down_id, sender);
@@ -310,9 +325,10 @@ where
                             }
                             Err(e) => warn!("Error recieving packet from below: {e:?}"),
                         }
-                        join_set.spawn(async move { Either::Left((rx.recv_async().await, rx)) });
+                        join_set
+                            .spawn(async move { ThreeWayEither::A((rx.recv_async().await, rx)) });
                     }
-                    Some(Ok(Either::Right((up_link_msg, rx)))) => {
+                    Some(Ok(ThreeWayEither::B((up_link_msg, rx)))) => {
                         match up_link_msg {
                             Ok(up_link_msg) => match up_link_msg {
                                 ProcessMessage::NewConn(upper_id, sender) => {
@@ -326,7 +342,13 @@ where
                             },
                             Err(e) => warn!("Down link packet error: {e:?}"),
                         }
-                        join_set.spawn(async move { Either::Right((rx.recv_async().await, rx)) });
+                        join_set
+                            .spawn(async move { ThreeWayEither::B((rx.recv_async().await, rx)) });
+                    }
+                    Some(Ok(ThreeWayEither::C(msg))) => {
+                        process
+                            .on_extra_message(msg, &down_link.tx, &up_link.tx, &mut join_set)
+                            .await;
                     }
                     Some(Err(e)) => warn!("join error: {e:?}"),
                     None => (),
@@ -336,6 +358,8 @@ where
         })
     }
 }
+
+pub type ReceptionResult<Message> = (Result<Message, RecvError>, Receiver<Message>);
 
 #[async_trait]
 pub trait MidLevelProcess<Id, UpId, DownId, DownPayload, UpPayload> {
@@ -353,6 +377,32 @@ pub trait MidLevelProcess<Id, UpId, DownId, DownPayload, UpPayload> {
         down_sender: &HashMap<DownId, Sender<ProcessMessage<Id, DownId, DownPayload>>>,
         up_sender: &HashMap<UpId, Sender<ProcessMessage<Id, UpId, UpPayload>>>,
     );
+    async fn setup(
+        &mut self,
+        join_set: &mut JoinSet<
+            ThreeWayEither<
+                ReceptionResult<ProcessMessage<DownId, Id, DownPayload>>,
+                ReceptionResult<ProcessMessage<UpId, Id, UpPayload>>,
+                Self::Extra,
+            >,
+        >,
+    ) {
+    }
+    type Extra: Send;
+    async fn on_extra_message(
+        &mut self,
+        msg: Self::Extra,
+        down_sender: &HashMap<DownId, Sender<ProcessMessage<Id, DownId, DownPayload>>>,
+        up_sender: &HashMap<UpId, Sender<ProcessMessage<Id, UpId, UpPayload>>>,
+        join_set: &mut JoinSet<
+            ThreeWayEither<
+                ReceptionResult<ProcessMessage<DownId, Id, DownPayload>>,
+                ReceptionResult<ProcessMessage<UpId, Id, UpPayload>>,
+                Self::Extra,
+            >,
+        >,
+    ) {
+    }
 }
 
 #[async_trait]
@@ -401,6 +451,7 @@ where
     ) {
         self.1(msg, up_id, down_sender, up_sender).await
     }
+    type Extra = ();
 }
 
 pub type ChassisProcessLink<Id, LinkedId, Payload> = ChassisInProcessLink<

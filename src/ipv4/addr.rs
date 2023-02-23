@@ -5,7 +5,7 @@ use std::{
 
 use crate::route::AddrMask;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IpV4Addr {
     addr: [u8; 4],
 }

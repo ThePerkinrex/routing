@@ -61,11 +61,11 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
             .iter()
             .find(
                 |RoutingEntry {
-                          destination: dest,
-                          gateway: _,
-                          mask,
-                          iface: _,
-                      }| (mask.clone() & dest.clone()) == (mask.clone() & addr.clone()),
+                     destination: dest,
+                     gateway: _,
+                     mask,
+                     iface: _,
+                 }| (mask.clone() & dest.clone()) == (mask.clone() & addr.clone()),
             )
             .map(
                 |RoutingEntry {

@@ -1,26 +1,28 @@
 use std::collections::HashMap;
 
-use chassis::{MidLevelProcess, NetworkLayerId, ProcessMessage, TransportLayerId};
-use either::Either;
+use chassis::{
+    LinkNetworkPayload, MidLevelProcess, NetworkLayerId, NetworkTransportPayload, ProcessMessage,
+    TransportLayerId,
+};
 use flume::Sender;
-use futures::FutureExt;
-use tokio::task::JoinSet;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
+    arp::ArpProcess,
     chassis::{Chassis, LinkLayerId},
     ethernet::{nic::Nic, packet::EthernetPacket},
     ipv4::{addr::IpV4Addr, packet::Ipv4Packet},
-    mac::{Mac, BROADCAST}, arp::ArpProcess,
+    mac::{Mac, BROADCAST},
 };
 
+mod arp;
 mod chassis;
 mod duplex_conn;
+mod either;
 mod ethernet;
 mod ipv4;
 mod mac;
 mod route;
-mod arp;
 
 #[tokio::main]
 async fn main() {
@@ -40,16 +42,28 @@ async fn main() {
             ip: IpV4Addr::new([192, 168, 0, 30]),
         },
     );
-    chassis_b.add_network_layer_process(chassis::NetworkLayerId::Arp, ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 30])), None));
+    chassis_b.add_network_layer_process(
+        chassis::NetworkLayerId::Arp,
+        ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 30])), None),
+    );
     let tx = chassis_a.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
         IpV4Process {
             ip: IpV4Addr::new([192, 168, 0, 31]),
         },
     );
-    let arp_tx = chassis_a.add_network_layer_process(chassis::NetworkLayerId::Arp, ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 31])), None));
-    tx.send(ProcessMessage::Message(TransportLayerId::Tcp, ()))
-        .unwrap();
+    let mut arp_p = ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 31])), None);
+    let handle = arp_p.new_ipv4_handle();
+    chassis_a.add_network_layer_process(
+        chassis::NetworkLayerId::Arp,
+        arp_p,
+    );
+    
+    tx.send(ProcessMessage::Message(
+        TransportLayerId::Tcp,
+        chassis::NetworkTransportMessage::IPv4(IpV4Addr::new([192, 168, 0, 30]), vec![0x69]),
+    ))
+    .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     info!("Stopped process");
 }
@@ -59,20 +73,27 @@ struct IpV4Process {
 }
 
 #[async_trait::async_trait]
-impl MidLevelProcess<NetworkLayerId, TransportLayerId, LinkLayerId, (Mac, Vec<u8>), ()>
-    for IpV4Process
+impl
+    MidLevelProcess<
+        NetworkLayerId,
+        TransportLayerId,
+        LinkLayerId,
+        LinkNetworkPayload,
+        NetworkTransportPayload,
+    > for IpV4Process
 {
+    type Extra = ();
     async fn on_down_message(
         &mut self,
-        (source_mac, msg): (Mac, Vec<u8>),
+        (source_mac, msg): LinkNetworkPayload,
         down_id: LinkLayerId,
         down_sender: &HashMap<
             LinkLayerId,
-            Sender<ProcessMessage<NetworkLayerId, LinkLayerId, (Mac, Vec<u8>)>>,
+            Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
         >,
         up_sender: &HashMap<
             TransportLayerId,
-            Sender<ProcessMessage<NetworkLayerId, TransportLayerId, ()>>,
+            Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportPayload>>,
         >,
     ) {
         trace!(IP = ?self.ip, "Recieved from {down_id} {source_mac}: {msg:?}");
@@ -82,15 +103,15 @@ impl MidLevelProcess<NetworkLayerId, TransportLayerId, LinkLayerId, (Mac, Vec<u8
     }
     async fn on_up_message(
         &mut self,
-        msg: (),
+        msg: NetworkTransportPayload,
         up_id: TransportLayerId,
         down_sender: &HashMap<
             LinkLayerId,
-            Sender<ProcessMessage<NetworkLayerId, LinkLayerId, (Mac, Vec<u8>)>>,
+            Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
         >,
         up_sender: &HashMap<
             TransportLayerId,
-            Sender<ProcessMessage<NetworkLayerId, TransportLayerId, ()>>,
+            Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportPayload>>,
         >,
     ) {
         trace!(IP = ?self.ip, "Recieved packet from {up_id:?}");
