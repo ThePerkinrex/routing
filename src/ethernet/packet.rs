@@ -1,10 +1,12 @@
 use crate::mac::Mac;
 
+use super::ethertype::EtherType;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetPacket {
     destination: Mac,
     source: Mac,
-    ether_type: u16,
+    ether_type: EtherType,
     pub payload: Vec<u8>,
 }
 
@@ -14,7 +16,7 @@ impl EthernetPacket {
             Some(Self {
                 destination,
                 source,
-                ether_type: payload.len() as u16,
+                ether_type: EtherType::from_u16(payload.len() as u16),
                 payload,
             })
         } else {
@@ -27,7 +29,7 @@ impl EthernetPacket {
             Some(Self {
                 destination,
                 source,
-                ether_type: 0x800,
+                ether_type: EtherType::IP_V4,
                 payload,
             })
         } else {
@@ -40,7 +42,7 @@ impl EthernetPacket {
             Some(Self {
                 destination,
                 source,
-                ether_type: 0x86DD,
+                ether_type: EtherType::IP_V6,
                 payload,
             })
         } else {
@@ -53,7 +55,7 @@ impl EthernetPacket {
             Some(Self {
                 destination,
                 source,
-                ether_type: 0x0806,
+                ether_type: EtherType::ARP,
                 payload,
             })
         } else {
@@ -65,7 +67,7 @@ impl EthernetPacket {
         self.destination
     }
 
-    pub const fn get_ether_type(&self) -> u16 {
+    pub const fn get_ether_type(&self) -> EtherType {
         self.ether_type
     }
 
@@ -73,7 +75,7 @@ impl EthernetPacket {
         let mut vec = Vec::with_capacity(14 + self.payload.len());
         vec.extend_from_slice(self.destination.as_slice());
         vec.extend_from_slice(self.source.as_slice());
-        vec.extend_from_slice(&self.ether_type.to_be_bytes());
+        vec.extend_from_slice(&self.ether_type.to_u16().to_be_bytes());
         vec.extend_from_slice(&self.payload);
         vec
     }
@@ -84,7 +86,7 @@ impl EthernetPacket {
         }
         let destination = Mac::new(data[0..6].try_into().ok()?);
         let source = Mac::new(data[6..12].try_into().ok()?);
-        let ether_type = u16::from_be_bytes(data[12..14].try_into().ok()?);
+        let ether_type = EtherType::from_u16(u16::from_be_bytes(data[12..14].try_into().ok()?));
         Some(Self {
             destination,
             source,

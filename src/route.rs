@@ -50,6 +50,32 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
             self.data.remove(i);
         }
     }
+
+    pub fn get_route(&self, addr: Addr) -> Option<(Addr, Iface)>
+    where
+        Mask: AddrMask<Addr> + Clone,
+        Addr: Clone + Eq,
+        Iface: Clone,
+    {
+        self.data
+            .iter()
+            .find(
+                |RoutingEntry {
+                          destination: dest,
+                          gateway: _,
+                          mask,
+                          iface: _,
+                      }| (mask.clone() & dest.clone()) == (mask.clone() & addr.clone()),
+            )
+            .map(
+                |RoutingEntry {
+                     destination: _,
+                     gateway,
+                     mask: _,
+                     iface,
+                 }| (gateway.clone(), iface.clone()),
+            )
+    }
 }
 
 impl<Addr, AddrMask, Iface> Default for RoutingTable<Addr, AddrMask, Iface> {

@@ -11,7 +11,7 @@ use crate::{
     chassis::{Chassis, LinkLayerId},
     ethernet::{nic::Nic, packet::EthernetPacket},
     ipv4::{addr::IpV4Addr, packet::Ipv4Packet},
-    mac::{Mac, BROADCAST},
+    mac::{Mac, BROADCAST}, arp::ArpProcess,
 };
 
 mod chassis;
@@ -20,7 +20,7 @@ mod ethernet;
 mod ipv4;
 mod mac;
 mod route;
-// TODO ARP
+mod arp;
 
 #[tokio::main]
 async fn main() {
@@ -31,21 +31,23 @@ async fn main() {
     let mut nic_b = Nic::new(&mut authority);
     nic_b.connect(&mut nic_a);
     let mut chassis_a = Chassis::new();
-    chassis_a.add_nic_with_id(LinkLayerId::Ethernet(0), nic_a);
+    chassis_a.add_nic_with_id(0, nic_a);
     let mut chassis_b = Chassis::new();
-    chassis_b.add_nic_with_id(LinkLayerId::Ethernet(0), nic_b);
+    chassis_b.add_nic_with_id(1, nic_b);
     chassis_b.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
         IpV4Process {
             ip: IpV4Addr::new([192, 168, 0, 30]),
         },
     );
+    chassis_b.add_network_layer_process(chassis::NetworkLayerId::Arp, ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 30])), None));
     let tx = chassis_a.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
         IpV4Process {
             ip: IpV4Addr::new([192, 168, 0, 31]),
         },
     );
+    let arp_tx = chassis_a.add_network_layer_process(chassis::NetworkLayerId::Arp, ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 31])), None));
     tx.send(ProcessMessage::Message(TransportLayerId::Tcp, ()))
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;

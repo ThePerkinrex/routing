@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 
 pub mod authority;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mac {
     addr: [u8; 6],
 }

@@ -7,19 +7,19 @@ use tokio::task::{JoinHandle, JoinSet};
 use tracing::{trace, warn};
 
 use crate::{
-    ethernet::{nic::Nic, packet::EthernetPacket},
+    ethernet::{nic::Nic, packet::EthernetPacket, ethertype::EtherType},
     mac::Mac,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LinkLayerId {
-    Ethernet(u16),
+    Ethernet(u16, Mac),
 }
 
 impl Display for LinkLayerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Ethernet(id) => write!(f, "eth{id}"),
+            Self::Ethernet(id, _) => write!(f, "eth{id}"),
         }
     }
 }
@@ -45,7 +45,7 @@ pub enum ProcessMessage<SenderId, ReceiverId, Payload> {
     Message(SenderId, Payload),
 }
 
-type LinkNetworkPayload = (Mac, Vec<u8>);
+pub type LinkNetworkPayload = (Mac, Vec<u8>);
 
 type LinkLayerProcessHandle = (
     JoinHandle<()>,
@@ -104,7 +104,8 @@ impl Chassis {
         });
     }
 
-    pub fn add_nic_with_id(&mut self, id: LinkLayerId, nic: Nic) {
+    pub fn add_nic_with_id(&mut self, id: u16, nic: Nic) {
+        let id = LinkLayerId::Ethernet(id, nic.mac());
         self.add_link_layer_process(id, move |mut up_link| async move {
             let (conn, addr) = nic.split();
             if let Some((tx, rx)) = conn {
@@ -128,14 +129,22 @@ impl Chassis {
                                             "Recieved packet"
                                         );
                                         match eth_packet.get_ether_type() {
-                                            0x0800 => {
+                                            EtherType::IP_V4 => {
                                                 if let Some(sender) = up_link.tx.get(&NetworkLayerId::Ipv4) {
                                                     let _ = sender.send_async(ProcessMessage::Message(id, (addr, eth_packet.payload))).await.map_err(|e| warn!("Cant send ipv4 packet up: {e:?}"));
                                                 }else{
                                                     warn!(NIC = ?addr,"No IPv4 process to send packet")
                                                 }
                                             }
-                                            x => warn!(NIC = ?addr, "Unknown ether_type {x:x}")
+
+                                            EtherType::ARP => {
+                                                if let Some(sender) = up_link.tx.get(&NetworkLayerId::Arp) {
+                                                    let _ = sender.send_async(ProcessMessage::Message(id, (addr, eth_packet.payload))).await.map_err(|e| warn!("Cant send arp packet up: {e:?}"));
+                                                }else{
+                                                    warn!(NIC = ?addr,"No IPv4 process to send packet")
+                                                }
+                                            }
+                                            x => warn!(NIC = ?addr, "Unknown ether_type {:x}", x.to_u16())
                                         }
                                     }
                                 }
