@@ -139,7 +139,7 @@ impl Chassis {
                                         match eth_packet.get_ether_type() {
                                             EtherType::IP_V4 => {
                                                 if let Some(sender) = up_link.tx.get(&NetworkLayerId::Ipv4) {
-                                                    let _ = sender.send_async(ProcessMessage::Message(id, (addr, eth_packet.payload))).await.map_err(|e| warn!("Cant send ipv4 packet up: {e:?}"));
+                                                    let _ = sender.send_async(ProcessMessage::Message(id, (eth_packet.get_source(), eth_packet.payload))).await.map_err(|e| warn!("Cant send ipv4 packet up: {e:?}"));
                                                 }else{
                                                     warn!(NIC = ?addr,"No IPv4 process to send packet")
                                                 }
@@ -147,7 +147,7 @@ impl Chassis {
 
                                             EtherType::ARP => {
                                                 if let Some(sender) = up_link.tx.get(&NetworkLayerId::Arp) {
-                                                    let _ = sender.send_async(ProcessMessage::Message(id, (addr, eth_packet.payload))).await.map_err(|e| warn!("Cant send arp packet up: {e:?}"));
+                                                    let _ = sender.send_async(ProcessMessage::Message(id, (eth_packet.get_source(), eth_packet.payload))).await.map_err(|e| warn!("Cant send arp packet up: {e:?}"));
                                                 }else{
                                                     warn!(NIC = ?addr,"No IPv4 process to send packet")
                                                 }
@@ -189,6 +189,7 @@ impl Chassis {
                                             }
                                         }
                                         NetworkLayerId::Arp => {
+                                            trace!(NIC = ?addr, "Transmitting ARP packet");
                                             match EthernetPacket::new_arp(dest, addr, payload) {
                                                 Some(packet) => {
                                                     let _ = tx.send_async(packet).await;

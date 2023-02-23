@@ -1,11 +1,12 @@
+use either::Either;
 use flume::{Receiver, RecvError, Sender};
 use tokio::task::JoinSet;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use crate::{
-    arp::packet::ArpPacket,
+    arp::packet::{ArpPacket, Operation},
     chassis::{
         LinkLayerId, LinkNetworkPayload, MidLevelProcess, NetworkLayerId, NetworkTransportPayload,
         ProcessMessage, ReceptionResult, TransportLayerId,
@@ -31,6 +32,30 @@ pub struct ArpProcess {
 pub struct ArpHandle<Addr, HAddr> {
     rx: Receiver<HAddr>,
     tx: Sender<Addr>,
+}
+
+impl<Addr, HAddr> ArpHandle<Addr, HAddr>
+where
+    Addr: Send,
+    HAddr: Send,
+{
+    pub async fn get_haddr(
+        &self,
+        addr: Addr,
+    ) -> Result<HAddr, either::Either<flume::SendError<Addr>, RecvError>> {
+        self.tx.send_async(addr).await.map_err(Either::Left)?;
+        self.rx.recv_async().await.map_err(Either::Right)
+    }
+
+    pub async fn get_haddr_timeout(
+        &self,
+        addr: Addr,
+        timeout: Duration,
+    ) -> Option<Result<HAddr, either::Either<flume::SendError<Addr>, RecvError>>> {
+        tokio::time::timeout(timeout, self.get_haddr(addr))
+            .await
+            .ok()
+    }
 }
 
 fn get_handle_pair<Addr, HAddr>() -> (ArpHandle<HAddr, Addr>, ArpHandle<Addr, HAddr>) {
@@ -76,31 +101,65 @@ impl
             LinkLayerId,
             Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
         >,
-        up_sender: &HashMap<
+        _: &HashMap<
             TransportLayerId,
             Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportPayload>>,
         >,
     ) {
         trace!(ARP = ?self, "Recieved from {down_id} {source_mac}: {msg:?}");
         if let Some(arp_packet) = ArpPacket::from_vec(&msg) {
-            match (arp_packet.htype, arp_packet.ptype) {
-                (1, EtherType::IP_V4) => {
+            match (arp_packet.htype, arp_packet.ptype, down_id) {
+                (1, EtherType::IP_V4, LinkLayerId::Ethernet(_, mac)) => {
                     if let Some((ip, _)) = self.ipv4 {
+                        // TODO add to ARP table, even if not for me
                         if ip.as_slice() == arp_packet.target_protocol_address.as_slice() {
-                            trace!(ARP = ?self, "Received ARP IPv4 packet: {arp_packet:?}")
+                            match arp_packet.operation {
+                                Operation::Request => {
+                                    // trace!(ARP = ?self, "Received ARP IPv4 Request packet: {arp_packet:?}");
+                                    let reply = ArpPacket::new_reply(
+                                        arp_packet.htype,
+                                        arp_packet.ptype,
+                                        mac.as_slice().to_vec(),
+                                        ip.as_slice().to_vec(),
+                                        arp_packet.sender_harware_address,
+                                        arp_packet.sender_protocol_address,
+                                    );
+                                    let _ = down_sender[&down_id]
+                                        .send_async(ProcessMessage::Message(
+                                            NetworkLayerId::Arp,
+                                            (source_mac, reply.to_vec()),
+                                        ))
+                                        .await;
+                                }
+                                Operation::Reply => {
+                                    // trace!(ARP = ?self, "Received ARP IPv4 Reply packet: {arp_packet:?}");
+                                    if let Some(tx) = self.ipv4_handle.1.as_ref() {
+                                        let _ = tx
+                                            .send_async(Mac::new(
+                                                arp_packet
+                                                    .sender_harware_address
+                                                    .try_into()
+                                                    .unwrap(),
+                                            ))
+                                            .await;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                (1, EtherType::IP_V6) => {
+                (1, EtherType::IP_V6, LinkLayerId::Ethernet(_, mac)) => {
                     if let Some((ip, _)) = self.ipv6 {
                         if ip.as_slice() == arp_packet.target_protocol_address.as_slice() {
                             trace!(ARP = ?self, "Received ARP IPv6 packet: {arp_packet:?}")
                         }
                     }
                 }
-                (1, x) => warn!(ARP = ?self, "Unknown ptype: {x:?}"),
-                (x, _) => warn!(ARP = ?self, "Unknown htype: {x}"),
+                (1, x, _) => warn!(ARP = ?self, "Unknown ptype: {x:?}"),
+                (x, _, _) => warn!(ARP = ?self, "Unknown htype: {x}"),
             }
+        } else {
+            warn!("Couldnt decode ARP packet");
         }
     }
     async fn on_up_message(

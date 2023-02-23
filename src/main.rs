@@ -54,16 +54,21 @@ async fn main() {
     );
     let mut arp_p = ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 31])), None);
     let handle = arp_p.new_ipv4_handle();
-    chassis_a.add_network_layer_process(
-        chassis::NetworkLayerId::Arp,
-        arp_p,
+    chassis_a.add_network_layer_process(chassis::NetworkLayerId::Arp, arp_p);
+    // tx.send(ProcessMessage::Message(
+    //     TransportLayerId::Tcp,
+    //     chassis::NetworkTransportMessage::IPv4(IpV4Addr::new([192, 168, 0, 30]), vec![0x69]),
+    // ))
+    // .unwrap();
+    debug!(
+        "Haddr: {:#?}",
+        handle
+            .get_haddr_timeout(
+                IpV4Addr::new([192, 168, 0, 30]),
+                std::time::Duration::from_millis(100)
+            )
+            .await
     );
-    
-    tx.send(ProcessMessage::Message(
-        TransportLayerId::Tcp,
-        chassis::NetworkTransportMessage::IPv4(IpV4Addr::new([192, 168, 0, 30]), vec![0x69]),
-    ))
-    .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     info!("Stopped process");
 }

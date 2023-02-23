@@ -67,6 +67,10 @@ impl EthernetPacket {
         self.destination
     }
 
+    pub const fn get_source(&self) -> Mac {
+        self.source
+    }
+
     pub const fn get_ether_type(&self) -> EtherType {
         self.ether_type
     }
