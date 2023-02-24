@@ -5,10 +5,10 @@ pub struct DuplexBarrage<P: Clone + Unpin> {
 }
 
 impl<P: Clone + Unpin> DuplexBarrage<P> {
-    pub fn bounded(bound: usize) -> Self {
-        let (tx, rx) = barrage::bounded(bound);
-        Self { tx, rx }
-    }
+    // pub fn bounded(bound: usize) -> Self {
+    //     let (tx, rx) = barrage::bounded(bound);
+    //     Self { tx, rx }
+    // }
 
     pub fn unbounded() -> Self {
         let (tx, rx) = barrage::unbounded();

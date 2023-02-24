@@ -46,7 +46,7 @@ async fn main() {
         chassis::NetworkLayerId::Arp,
         ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 30])), None),
     );
-    let tx = chassis_a.add_network_layer_process(
+    let _tx = chassis_a.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
         IpV4Process {
             ip: IpV4Addr::new([192, 168, 0, 31]),

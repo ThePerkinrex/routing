@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use async_trait::async_trait;
+use derivative::Derivative;
 use either::Either;
 use flume::{Receiver, RecvError, Sender};
 use tokio::task::{JoinHandle, JoinSet};
@@ -13,9 +14,15 @@ use crate::{
     mac::Mac,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Eq, Derivative)]
+#[derivative(Hash, PartialEq)]
 pub enum LinkLayerId {
-    Ethernet(u16, Mac),
+    Ethernet(
+        u16,
+        #[derivative(PartialEq = "ignore")]
+        #[derivative(Hash = "ignore")]
+        Mac,
+    ),
 }
 
 impl Display for LinkLayerId {

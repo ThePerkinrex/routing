@@ -1,7 +1,7 @@
 use either::Either;
 use flume::{Receiver, RecvError, Sender};
 use tokio::task::JoinSet;
-use tracing::{debug, info, trace, warn};
+use tracing::{trace, warn};
 
 use std::{collections::HashMap, time::Duration};
 
@@ -110,8 +110,17 @@ impl
         if let Some(arp_packet) = ArpPacket::from_vec(&msg) {
             match (arp_packet.htype, arp_packet.ptype, down_id) {
                 (1, EtherType::IP_V4, LinkLayerId::Ethernet(_, mac)) => {
-                    if let Some((ip, _)) = self.ipv4 {
-                        // TODO add to ARP table, even if not for me
+                    if let Some((ip, table)) = &mut self.ipv4 {
+                        if let (Ok(sha), Ok(spa)) = (
+                            arp_packet.sender_harware_address.as_slice().try_into(),
+                            arp_packet.sender_protocol_address.as_slice().try_into(),
+                        ) {
+                            let ip = IpV4Addr::new(spa);
+                            let mac = Mac::new(sha);
+                            table.entry(ip).or_insert(mac);
+                            trace!("ARP: Tried to add pair {ip} -> {mac} to the table");
+                        }
+
                         if ip.as_slice() == arp_packet.target_protocol_address.as_slice() {
                             match arp_packet.operation {
                                 Operation::Request => {
@@ -148,7 +157,7 @@ impl
                         }
                     }
                 }
-                (1, EtherType::IP_V6, LinkLayerId::Ethernet(_, mac)) => {
+                (1, EtherType::IP_V6, LinkLayerId::Ethernet(_, _)) => {
                     if let Some((ip, _)) = self.ipv6 {
                         if ip.as_slice() == arp_packet.target_protocol_address.as_slice() {
                             trace!(ARP = ?self, "Received ARP IPv6 packet: {arp_packet:?}")
@@ -164,13 +173,13 @@ impl
     }
     async fn on_up_message(
         &mut self,
-        msg: NetworkTransportPayload,
+        _: NetworkTransportPayload,
         up_id: TransportLayerId,
-        down_sender: &HashMap<
+        _: &HashMap<
             LinkLayerId,
             Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
         >,
-        up_sender: &HashMap<
+        _: &HashMap<
             TransportLayerId,
             Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportPayload>>,
         >,
@@ -233,8 +242,10 @@ impl
             Ok(ip) => {
                 if let Some((_, table)) = self.ipv4.as_mut() {
                     if let Some(addr) = table.get(&ip) {
+                        trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
                         let _ = self.ipv4_handle.1.as_ref().unwrap().send_async(*addr).await;
                     } else {
+                        trace!("ARP: Searching for MAC address for IPv4 {ip}");
                         for (id, sender) in down_sender {
                             match id {
                                 LinkLayerId::Ethernet(_, sha) => {
