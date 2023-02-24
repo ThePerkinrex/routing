@@ -1,17 +1,31 @@
+use tracing::{debug, warn};
+
 use super::{addr::IpV4Addr, protocol::ProtocolType};
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ECN {
+pub enum Ecn {
     NotECT = 0b00,
     ECT0 = 0b01,
     ECT1 = 0b10,
     CE = 0b11,
 }
 
+impl Ecn {
+    const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            0b00 => Some(Self::NotECT),
+            0b01 => Some(Self::ECT0),
+            0b10 => Some(Self::ECT1),
+            0b11 => Some(Self::CE),
+            _ => None,
+        }
+    }
+}
+
 bitflags::bitflags! {
     /// 3 bit
-    struct Flags: u8 {
+    pub struct Flags: u8 {
         /// Dont fragment
         const DF = 0b010;
         /// More fragments
@@ -30,7 +44,7 @@ pub struct IpV4Header {
     /// Differentiated Services Code Point
     dscp: u8, // 6 bit
     /// Explicit Congestion Notification
-    ecn: ECN, // 2 bit
+    ecn: Ecn, // 2 bit
 
     total_length: u16,
 
@@ -39,7 +53,7 @@ pub struct IpV4Header {
     flags: Flags,         // 3 bit
     fragment_offset: u16, // 13 bit,
 
-    time_to_live: u8,
+    pub time_to_live: u8,
 
     protocol: ProtocolType,
 
@@ -48,41 +62,39 @@ pub struct IpV4Header {
     // For purposes of computing the checksum, the value of the checksum field is zero.
 
     // 32 bit each
-    destination: IpV4Addr,
-    source: IpV4Addr,
+    pub destination: IpV4Addr,
+    pub source: IpV4Addr,
 
     // TODO decode
     options: Vec<u8>,
 }
 
-fn ones_complement(mut num: u16) -> u16 {
+const fn ones_complement(mut num: u16) -> u16 {
     let mut cnt = 15;
-    let mut tmp = 0;
     let mut flg = 0;
 
-    println!("Binary number: {:#0b}", num);
+    // println!("Binary number: {:#0b}", num);
 
     while cnt >= 0 {
-        tmp = num & (1 << cnt);
-        if tmp > 0 {
+        if num & (1 << cnt) > 0 {
             flg = 1;
             num &= !(1 << cnt);
         } else if flg == 1 {
             num |= 1 << cnt;
         }
 
-        cnt = cnt - 1;
+        cnt -= 1;
     }
 
     num
 }
 
 impl IpV4Header {
-    fn new(
+    pub fn new(
         // version: u8,
         // ihl: u8,
         dscp: u8,
-        ecn: ECN,
+        ecn: Ecn,
         payload_length: u16,
         identification: u16,
         flags: Flags,
@@ -122,19 +134,53 @@ impl IpV4Header {
         ones_complement(sum)
     }
 
-    // pub fn from_vec(data: &[u8]) -> Option<Self> {
-    //     if data.len() < 8 {
-    //         return None;
-    //     }
+    pub fn from_vec(data: &[u8]) -> Option<(Self, usize)> {
+        if data[0] >> 4 != 4 {
+            warn!("IPv4 header version is not set correctly");
+            return None;
+        }
+        let ihl = data[0] & 0x0f;
+        if data.len() < ihl as usize * 4 {
+            warn!("IPv4 header: Not enough data");
+            return None;
+        }
+        let dscp = data[1] >> 2;
+        let ecn = Ecn::from_u8(data[1] & 0b11)?;
+        let total_length = u16::from_be_bytes(data[2..4].try_into().unwrap());
+        if data.len() < total_length as usize {
+            return None;
+        }
+        let identification = u16::from_be_bytes(data[4..6].try_into().unwrap());
+        let fragment_and_flags = u16::from_be_bytes(data[6..8].try_into().unwrap());
+        let fragment_offset = fragment_and_flags & 0x1fff;
+        let flags = Flags::from_bits((fragment_and_flags >> 13) as u8)?;
+        let time_to_live = data[8];
+        let protocol = ProtocolType::new(data[9]);
+        let checksum = u16::from_be_bytes(data[10..12].try_into().unwrap());
+        let source = IpV4Addr::new(data[12..16].try_into().unwrap());
+        let destination = IpV4Addr::new(data[16..20].try_into().unwrap());
+        let options = data[20..(ihl as usize * 4)].to_vec();
+        let res = Self {
+            dscp,
+            ecn,
+            total_length,
+            identification,
+            flags,
+            fragment_offset,
+            time_to_live,
+            protocol,
+            destination,
+            source,
+            options,
+        };
+        let checksum = res.get_checksum(checksum);
+        if checksum != 0 {
+            warn!(header = ?res, "IPv4 header checksum error, calculation returned non zero ({})", checksum);
+            return None;
+        }
 
-    //     let destination = IpV4Addr::new(data[0..4].try_into().ok()?);
-    //     let source = IpV4Addr::new(data[4..8].try_into().ok()?);
-    //     Some(Self {
-    //         destination,
-    //         source,
-    //         payload: data[8..].to_vec(),
-    //     })
-    // }
+        Some((res, ihl as usize * 4))
+    }
 
     fn to_vec_checksum(&self, checksum: u16) -> Vec<u8> {
         let mut vec = Vec::with_capacity(20 + self.options.len());
@@ -163,9 +209,9 @@ impl IpV4Header {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ipv4Packet {
-    header: IpV4Header,
+    pub header: IpV4Header,
 
-    payload: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 impl Ipv4Packet {
@@ -174,23 +220,13 @@ impl Ipv4Packet {
     }
 
     pub fn from_vec(data: &[u8]) -> Option<Self> {
-        if data.len() < 8 {
-            return None;
-        }
+        let (header, left) = IpV4Header::from_vec(data)?;
 
-        let destination = IpV4Addr::new(data[0..4].try_into().ok()?);
-        let source = IpV4Addr::new(data[4..8].try_into().ok()?);
-        Some(Self {
-            destination,
-            source,
-            payload: data[8..].to_vec(),
-        })
+        Some(Self::new(header, data[left..].to_vec()))
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
-        let mut vec = Vec::with_capacity(8 + self.payload.len());
-        vec.extend_from_slice(self.destination.as_slice());
-        vec.extend_from_slice(self.source.as_slice());
+        let mut vec = self.header.to_vec();
         vec.extend_from_slice(&self.payload);
         vec
     }

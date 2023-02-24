@@ -15,6 +15,17 @@ pub struct RoutingEntry<Addr, AddrMask, Iface> {
     iface: Iface,
 }
 
+impl<Addr, AddrMask, Iface> RoutingEntry<Addr, AddrMask, Iface> {
+    pub fn new(destination: Addr, gateway: Addr, mask: AddrMask, iface: Iface) -> Self {
+        Self {
+            destination,
+            gateway,
+            mask,
+            iface,
+        }
+    }
+}
+
 pub struct RoutingTable<Addr, Mask, Iface> {
     data: Vec<RoutingEntry<Addr, Mask, Iface>>,
 }

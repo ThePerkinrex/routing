@@ -57,6 +57,8 @@ pub enum ProcessMessage<SenderId, ReceiverId, Payload> {
 pub type LinkNetworkPayload = (Mac, Vec<u8>);
 pub type NetworkTransportPayload = NetworkTransportMessage;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NetworkTransportMessage {
     IPv4(IpV4Addr, Vec<u8>),
     // IPv6(IpV6Addr, Vec<u8>),

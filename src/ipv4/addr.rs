@@ -3,6 +3,8 @@ use std::{
     ops::BitAnd,
 };
 
+use tracing::debug;
+
 use crate::route::AddrMask;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -54,7 +56,8 @@ impl IpV4Mask {
         for _ in 0..self.0 {
             mask = 1 + (mask << 1);
         }
-        mask <<= 32 - self.0;
+        // debug!("mask: {mask}");
+        mask = mask.overflowing_shl(32 - self.0 as u32).0;
         mask.to_be_bytes()
     }
 }

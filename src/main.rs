@@ -11,8 +11,14 @@ use crate::{
     arp::ArpProcess,
     chassis::{Chassis, LinkLayerId},
     ethernet::{nic::Nic, packet::EthernetPacket},
-    ipv4::{addr::IpV4Addr, packet::Ipv4Packet},
+    ipv4::{
+        addr::{IpV4Addr, IpV4Mask},
+        config::IpV4Config,
+        packet::Ipv4Packet,
+        IpV4Process,
+    },
     mac::{Mac, BROADCAST},
+    route::RoutingEntry,
 };
 
 mod arp;
@@ -36,102 +42,47 @@ async fn main() {
     chassis_a.add_nic_with_id(0, nic_a);
     let mut chassis_b = Chassis::new();
     chassis_b.add_nic_with_id(1, nic_b);
+    let ipv4_config = IpV4Config::default();
+    ipv4_config.write().await.addr = IpV4Addr::new([192, 168, 0, 30]);
+    let mut arp_b = ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 30])), None);
     chassis_b.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
-        IpV4Process {
-            ip: IpV4Addr::new([192, 168, 0, 30]),
-        },
+        IpV4Process::new(ipv4_config, arp_b.new_ipv4_handle()),
     );
-    chassis_b.add_network_layer_process(
-        chassis::NetworkLayerId::Arp,
-        ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 30])), None),
-    );
-    let _tx = chassis_a.add_network_layer_process(
-        chassis::NetworkLayerId::Ipv4,
-        IpV4Process {
-            ip: IpV4Addr::new([192, 168, 0, 31]),
-        },
-    );
+    chassis_b.add_network_layer_process(chassis::NetworkLayerId::Arp, arp_b);
+    let ipv4_config = IpV4Config::default();
+    ipv4_config.write().await.addr = IpV4Addr::new([192, 168, 0, 31]);
+    ipv4_config
+        .write()
+        .await
+        .routing
+        .add_route(RoutingEntry::new(
+            ipv4::addr::DEFAULT,
+            IpV4Addr::new([192, 168, 0, 30]),
+            IpV4Mask::new(0),
+            LinkLayerId::Ethernet(0, mac::BROADCAST),
+        ));
     let mut arp_p = ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 31])), None);
     let handle = arp_p.new_ipv4_handle();
-    chassis_a.add_network_layer_process(chassis::NetworkLayerId::Arp, arp_p);
-    // tx.send(ProcessMessage::Message(
-    //     TransportLayerId::Tcp,
-    //     chassis::NetworkTransportMessage::IPv4(IpV4Addr::new([192, 168, 0, 30]), vec![0x69]),
-    // ))
-    // .unwrap();
-    debug!(
-        "Haddr: {:#?}",
-        handle
-            .get_haddr_timeout(
-                IpV4Addr::new([192, 168, 0, 30]),
-                std::time::Duration::from_millis(100)
-            )
-            .await
+    let tx = chassis_a.add_network_layer_process(
+        chassis::NetworkLayerId::Ipv4,
+        IpV4Process::new(ipv4_config, handle),
     );
+    chassis_a.add_network_layer_process(chassis::NetworkLayerId::Arp, arp_p);
+    tx.send(ProcessMessage::Message(
+        TransportLayerId::Tcp,
+        chassis::NetworkTransportMessage::IPv4(IpV4Addr::new([192, 168, 0, 30]), vec![0x69]),
+    ))
+    .unwrap();
+    // debug!(
+    //     "Haddr: {:#?}",
+    //     handle
+    //         .get_haddr_timeout(
+    //             IpV4Addr::new([192, 168, 0, 30]),
+    //             std::time::Duration::from_millis(100)
+    //         )
+    //         .await
+    // );
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     info!("Stopped process");
-}
-
-struct IpV4Process {
-    ip: IpV4Addr,
-}
-
-#[async_trait::async_trait]
-impl
-    MidLevelProcess<
-        NetworkLayerId,
-        TransportLayerId,
-        LinkLayerId,
-        LinkNetworkPayload,
-        NetworkTransportPayload,
-    > for IpV4Process
-{
-    type Extra = ();
-    async fn on_down_message(
-        &mut self,
-        (source_mac, msg): LinkNetworkPayload,
-        down_id: LinkLayerId,
-        down_sender: &HashMap<
-            LinkLayerId,
-            Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
-        >,
-        up_sender: &HashMap<
-            TransportLayerId,
-            Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportPayload>>,
-        >,
-    ) {
-        trace!(IP = ?self.ip, "Recieved from {down_id} {source_mac}: {msg:?}");
-        if let Some(ip_packet) = ipv4::packet::Ipv4Packet::from_vec(&msg) {
-            debug!(IP = ?self.ip, "Recieved IP packet: {ip_packet:?}")
-        }
-    }
-    async fn on_up_message(
-        &mut self,
-        msg: NetworkTransportPayload,
-        up_id: TransportLayerId,
-        down_sender: &HashMap<
-            LinkLayerId,
-            Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
-        >,
-        up_sender: &HashMap<
-            TransportLayerId,
-            Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportPayload>>,
-        >,
-    ) {
-        trace!(IP = ?self.ip, "Recieved packet from {up_id:?}");
-        for (id, sender) in down_sender {
-            trace!(IP = ?self.ip, "Sending IPv4 packet to interface: {id}");
-            sender
-                .send_async(ProcessMessage::Message(
-                    NetworkLayerId::Ipv4,
-                    (
-                        BROADCAST,
-                        Ipv4Packet::new(ipv4::addr::BROADCAST, self.ip, vec![0x69, 0x69]).to_vec(),
-                    ),
-                ))
-                .await
-                .unwrap();
-        }
-    }
 }
