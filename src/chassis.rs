@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, hash::Hash};
+use std::{collections::HashMap, fmt::Display, hash::Hash, sync::Arc};
 
 use async_trait::async_trait;
 use derivative::Derivative;
@@ -44,6 +44,7 @@ pub enum NetworkLayerId {
 pub enum TransportLayerId {
     Tcp,
     Udp,
+    Icmp
 }
 
 pub enum ProcessMessage<SenderId, ReceiverId, Payload> {
@@ -74,6 +75,33 @@ type MidLayerProcessHandle<DownId, Id, UpId, DownPayload, UpPayload> = (
     Sender<ProcessMessage<DownId, Id, DownPayload>>,
     Sender<ProcessMessage<UpId, Id, UpPayload>>,
 );
+
+pub struct NicHandle {
+    connected: bool,
+    disconnect: (Sender<()>, Receiver<()>),
+    connect: (Sender<Nic>, Receiver<Nic>)
+}
+
+impl NicHandle {
+    pub async fn connect(&mut self, nic: Nic) -> Option<Nic> {
+        if self.connected {
+            warn!("Didnt connect NIC");
+            Some(nic)
+        }else{
+            self.connect.0.send_async(nic).await.ok()?;
+            self.connect.1.recv_async().await.ok()
+        }
+    }
+
+    pub async fn disconnect(&mut self, nic: Nic) -> bool {
+        if self.connected {
+            if self.connect.0.send_async(nic).await.is_err() {return false}
+            self.connect.1.recv_async().await.is_ok()
+        }else{
+            false
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Chassis {
@@ -121,105 +149,142 @@ impl Chassis {
         });
     }
 
-    pub fn add_nic_with_id(&mut self, id: u16, nic: Nic) {
+    pub fn add_nic_with_id(&mut self, id: u16, nic: Nic) -> NicHandle {
         let id = LinkLayerId::Ethernet(id, nic.mac());
+        let (conn_tx, conn_rx) = flume::unbounded();
+        let (dconn_tx, dconn_rx) = flume::unbounded();
+        let (conn_reply_tx, conn_reply_rx) = flume::unbounded();
+        let (dconn_reply_tx, dconn_reply_rx) = flume::unbounded();
+        let res = NicHandle {
+            connected: nic.is_up(),
+            disconnect: (dconn_tx, dconn_reply_rx),
+            connect: (conn_tx, conn_reply_rx),
+        };
         self.add_link_layer_process(id, move |mut up_link| async move {
-            let (conn, addr) = nic.split();
-            if let Some((tx, rx)) = conn {
-                let mut join_set = JoinSet::new();
-                // let nic_ref = &nic;
-                join_set.spawn(async move { Either::Left((rx.recv_async().await, rx)) });
-                join_set.spawn(async move {
-                    Either::Right((up_link.rx.recv_async().await, up_link.rx))
-                });
-                loop {
-                    match join_set.join_next().await {
-                        Some(Ok(Either::Left((eth_packet, rx)))) => {
-                            match eth_packet {
-                                Err(_) => warn!(NIC = ?addr, "Error recieving eth packet: Disconnected"),
-                                Ok(eth_packet) => {
-                                    let dest = eth_packet.get_dest();
-                                    if dest == addr || dest.is_multicast() {
-                                        trace!(
-                                            NIC = ?addr,
-                                            packet = ?eth_packet,
-                                            "Recieved packet"
-                                        );
-                                        match eth_packet.get_ether_type() {
-                                            EtherType::IP_V4 => {
-                                                if let Some(sender) = up_link.tx.get(&NetworkLayerId::Ipv4) {
-                                                    let _ = sender.send_async(ProcessMessage::Message(id, (eth_packet.get_source(), eth_packet.payload))).await.map_err(|e| warn!("Cant send ipv4 packet up: {e:?}"));
-                                                }else{
-                                                    warn!(NIC = ?addr,"No IPv4 process to send packet")
+            let (mut conn, addr) = nic.split();
+            let dconn_rx = Arc::new(dconn_rx);
+            let uplink_rx = Arc::new(up_link.rx);
+            'state_change: loop {
+                if let Some((tx, rx)) = conn.take() {
+                    let mut join_set = JoinSet::new();
+                    // let nic_ref = &nic;
+                    join_set.spawn(async move { ThreeWayEither::A((rx.recv_async().await, rx)) });
+                    let uplink_rx_clone = uplink_rx.clone();
+                    join_set.spawn(async move {
+                        ThreeWayEither::B(uplink_rx_clone.recv_async().await)
+                    });
+                    let dconn_rx_clone = dconn_rx.clone();
+                    join_set.spawn(async move {
+                        ThreeWayEither::C(dconn_rx_clone.recv_async().await)
+                    });
+                    loop {
+                        match join_set.join_next().await {
+                            Some(Ok(ThreeWayEither::A((eth_packet, rx)))) => {
+                                match eth_packet {
+                                    Err(_) => warn!(NIC = ?addr, "Error recieving eth packet: Disconnected"),
+                                    Ok(eth_packet) => {
+                                        let dest = eth_packet.get_dest();
+                                        if dest == addr || dest.is_multicast() {
+                                            trace!(
+                                                NIC = ?addr,
+                                                packet = ?eth_packet,
+                                                "Recieved packet"
+                                            );
+                                            match eth_packet.get_ether_type() {
+                                                EtherType::IP_V4 => {
+                                                    if let Some(sender) = up_link.tx.get(&NetworkLayerId::Ipv4) {
+                                                        let _ = sender.send_async(ProcessMessage::Message(id, (eth_packet.get_source(), eth_packet.payload))).await.map_err(|e| warn!("Cant send ipv4 packet up: {e:?}"));
+                                                    }else{
+                                                        warn!(NIC = ?addr,"No IPv4 process to send packet")
+                                                    }
                                                 }
-                                            }
-
-                                            EtherType::ARP => {
-                                                if let Some(sender) = up_link.tx.get(&NetworkLayerId::Arp) {
-                                                    let _ = sender.send_async(ProcessMessage::Message(id, (eth_packet.get_source(), eth_packet.payload))).await.map_err(|e| warn!("Cant send arp packet up: {e:?}"));
-                                                }else{
-                                                    warn!(NIC = ?addr,"No IPv4 process to send packet")
+    
+                                                EtherType::ARP => {
+                                                    if let Some(sender) = up_link.tx.get(&NetworkLayerId::Arp) {
+                                                        let _ = sender.send_async(ProcessMessage::Message(id, (eth_packet.get_source(), eth_packet.payload))).await.map_err(|e| warn!("Cant send arp packet up: {e:?}"));
+                                                    }else{
+                                                        warn!(NIC = ?addr,"No IPv4 process to send packet")
+                                                    }
                                                 }
+                                                x => warn!(NIC = ?addr, "Unknown ether_type {:x}", x.to_u16())
                                             }
-                                            x => warn!(NIC = ?addr, "Unknown ether_type {:x}", x.to_u16())
                                         }
                                     }
                                 }
+                                join_set
+                                    .spawn(async move { ThreeWayEither::A((rx.recv_async().await, rx)) });
                             }
-                            join_set
-                                .spawn(async move { Either::Left((rx.recv_async().await, rx)) });
-                        }
-                        Some(Ok(Either::Right((up_link_msg, rx)))) => {
-                            match up_link_msg {
-                                Ok(up_link_msg) => match up_link_msg {
-                                    ProcessMessage::NewConn(upper_id, sender) => {
-                                        up_link.tx.insert(upper_id, sender);
-                                    }
-                                    ProcessMessage::Message(id, (dest, payload)) => match id {
-                                        NetworkLayerId::Ipv4 => {
-                                            trace!(NIC = ?addr, "Transmitting ipv4 packet");
-                                            match EthernetPacket::new_ip_v4(dest, addr, payload) {
-                                                Some(packet) => {
-                                                    let _ = tx.send_async(packet).await;
-                                                }
-                                                None => {
-                                                    warn!(NIC = ?addr, "Error building ethernet ipv4 packet")
+                            Some(Ok(ThreeWayEither::B(up_link_msg))) => {
+                                match up_link_msg {
+                                    Ok(up_link_msg) => match up_link_msg {
+                                        ProcessMessage::NewConn(upper_id, sender) => {
+                                            up_link.tx.insert(upper_id, sender);
+                                        }
+                                        ProcessMessage::Message(id, (dest, payload)) => match id {
+                                            NetworkLayerId::Ipv4 => {
+                                                trace!(NIC = ?addr, "Transmitting ipv4 packet");
+                                                match EthernetPacket::new_ip_v4(dest, addr, payload) {
+                                                    Some(packet) => {
+                                                        let _ = tx.send_async(packet).await;
+                                                    }
+                                                    None => {
+                                                        warn!(NIC = ?addr, "Error building ethernet ipv4 packet")
+                                                    }
                                                 }
                                             }
-                                        }
-                                        NetworkLayerId::Ipv6 => {
-                                            match EthernetPacket::new_ip_v6(dest, addr, payload) {
-                                                Some(packet) => {
-                                                    let _ = tx.send_async(packet).await;
-                                                }
-                                                None => {
-                                                    warn!(NIC = ?addr, "Error building ethernet ipv6 packet")
+                                            NetworkLayerId::Ipv6 => {
+                                                match EthernetPacket::new_ip_v6(dest, addr, payload) {
+                                                    Some(packet) => {
+                                                        let _ = tx.send_async(packet).await;
+                                                    }
+                                                    None => {
+                                                        warn!(NIC = ?addr, "Error building ethernet ipv6 packet")
+                                                    }
                                                 }
                                             }
-                                        }
-                                        NetworkLayerId::Arp => {
-                                            trace!(NIC = ?addr, "Transmitting ARP packet");
-                                            match EthernetPacket::new_arp(dest, addr, payload) {
-                                                Some(packet) => {
-                                                    let _ = tx.send_async(packet).await;
+                                            NetworkLayerId::Arp => {
+                                                trace!(NIC = ?addr, "Transmitting ARP packet");
+                                                match EthernetPacket::new_arp(dest, addr, payload) {
+                                                    Some(packet) => {
+                                                        let _ = tx.send_async(packet).await;
+                                                    }
+                                                    None => warn!(NIC = ?addr, "Error building ethernet ARP packet"),
                                                 }
-                                                None => warn!(NIC = ?addr, "Error building ethernet ARP packet"),
                                             }
-                                        }
+                                        },
                                     },
-                                },
-                                Err(e) => warn!(NIC = ?addr, "Down link packet error: {e:?}"),
+                                    Err(e) => warn!(NIC = ?addr, "Down link packet error: {e:?}"),
+                                }
+                                let uplink_rx_clone = uplink_rx.clone();
+                                join_set.spawn(async move {
+                                    ThreeWayEither::B(uplink_rx_clone.recv_async().await)
+                                });
                             }
-                            join_set
-                                .spawn(async move { Either::Right((rx.recv_async().await, rx)) });
+                            Some(Ok(ThreeWayEither::C(msg))) => {
+                                match msg {
+                                    Ok(()) => {
+                                        dconn_reply_tx.send_async(()).await.unwrap();
+                                        continue 'state_change
+                                    },
+                                    Err(e) => warn!(NIC = ?addr, "Disconnect packet error: {e:?}"),
+                                }
+                            }
+                            Some(Err(e)) => warn!(NIC = ?addr, "join error: {e:?}"),
+                            None => (),
                         }
-                        Some(Err(e)) => warn!(NIC = ?addr, "join error: {e:?}"),
-                        None => (),
+                        tokio::task::yield_now().await
                     }
-                    tokio::task::yield_now().await
+                }else if let Ok(mut nic) = conn_rx.recv_async().await {
+                    let mut new_inner_nic = Nic::new_with_mac(addr);
+                    new_inner_nic.connect(&mut nic);
+                    conn_reply_tx.send_async(nic).await.unwrap();
+                    conn = new_inner_nic.split().0;
+                    continue 'state_change;
                 }
+                break
             }
-        })
+        });
+        res
     }
 
     pub fn add_network_layer_process<

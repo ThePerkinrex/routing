@@ -55,7 +55,7 @@ pub struct IpV4Header {
 
     pub time_to_live: u8,
 
-    protocol: ProtocolType,
+    pub protocol: ProtocolType,
 
     // Checksum (16 bit)
     // The checksum field is the 16 bit one's complement of the one's complement sum of all 16 bit words in the header.

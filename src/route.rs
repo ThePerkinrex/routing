@@ -1,6 +1,6 @@
 // destination | gateway | mask | iface
 
-use std::ops::BitAnd;
+use std::{ops::BitAnd, fmt::Display};
 
 pub trait AddrMask<Addr>: BitAnd<Addr, Output = Addr> {
     type Specifity: Ord;
@@ -16,7 +16,7 @@ pub struct RoutingEntry<Addr, AddrMask, Iface> {
 }
 
 impl<Addr, AddrMask, Iface> RoutingEntry<Addr, AddrMask, Iface> {
-    pub fn new(destination: Addr, gateway: Addr, mask: AddrMask, iface: Iface) -> Self {
+    pub const fn new(destination: Addr, gateway: Addr, mask: AddrMask, iface: Iface) -> Self {
         Self {
             destination,
             gateway,
@@ -87,6 +87,16 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
                      iface,
                  }| (gateway.clone(), iface.clone()),
             )
+    }
+}
+
+impl<Addr, AddrMask, Iface> RoutingTable<Addr, AddrMask, Iface> where Addr: Display, AddrMask: Display, Iface: Display {
+    pub fn print(&self) -> prettytable::Table {
+        let mut table = prettytable::table!(["destination", "mask", "gateway", "iface"]);
+        for RoutingEntry { destination, gateway, mask, iface } in self.data.iter() {
+            table.add_row(prettytable::row![destination, mask, gateway, iface]);
+        }
+        table
     }
 }
 

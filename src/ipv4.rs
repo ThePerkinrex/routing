@@ -9,7 +9,7 @@ use crate::{
         LinkLayerId, LinkNetworkPayload, MidLevelProcess, NetworkLayerId, NetworkTransportMessage,
         NetworkTransportPayload, ProcessMessage, TransportLayerId,
     },
-    ipv4::packet::{IpV4Header, Ipv4Packet},
+    ipv4::{packet::{IpV4Header, Ipv4Packet}, self},
     mac::{self, Mac},
 };
 
@@ -60,7 +60,18 @@ impl
         if let Some(mut ip_packet) = Ipv4Packet::from_vec(&msg) {
             trace!(IP = ?ip, "Recieved IP packet: {ip_packet:?}");
             if ip_packet.header.destination == ip {
-                trace!(IP = ?ip, "My packet");
+                // TODO fragmented packets`
+                if let Some(up_id) = match ip_packet.header.protocol {
+                    protocol::ProtocolType::TCP => Some(TransportLayerId::Tcp),
+                    protocol::ProtocolType::UDP => Some(TransportLayerId::Udp),
+                    protocol::ProtocolType::ICMP => Some(TransportLayerId::Icmp),
+                    x => {warn!(IP = ?ip, "Unknown IP protocol: {x:?}"); None}
+                } {
+                    
+                    if let Some(sender) = up_sender.get(&up_id) {
+                        let _ = sender.send_async(ProcessMessage::Message(NetworkLayerId::Ipv4, NetworkTransportMessage::IPv4(ip_packet.header.source, ip_packet.payload))).await;
+                    }
+                }
             } else if ip_packet.header.time_to_live > 0 {
                 ip_packet.header.time_to_live -= 1;
                 if let Some((next_hop, iface)) = self
@@ -113,6 +124,7 @@ impl
             let ptype = match up_id {
                 TransportLayerId::Tcp => protocol::ProtocolType::TCP,
                 TransportLayerId::Udp => protocol::ProtocolType::UDP,
+                TransportLayerId::Icmp => protocol::ProtocolType::ICMP,
             };
             let ip = self.config.read().await.addr;
             trace!(IP = ?ip, msg = ?msg, "Recieved packet from {up_id:?} towards {target_ip}");

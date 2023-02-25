@@ -35,15 +35,16 @@ async fn main() {
     tracing_subscriber::fmt::init();
     info!("Started process");
     let mut authority = mac::authority::SequentialAuthority::new([0, 0x69, 0x69]);
-    let mut nic_a = Nic::new(&mut authority);
+    let nic_a = Nic::new(&mut authority);
     let mut nic_b = Nic::new(&mut authority);
-    nic_b.connect(&mut nic_a);
+    // nic_b.connect(&mut nic_a);
     let mut chassis_a = Chassis::new();
-    chassis_a.add_nic_with_id(0, nic_a);
+    nic_b = chassis_a.add_nic_with_id(0, nic_a).connect(nic_b).await.unwrap();
     let mut chassis_b = Chassis::new();
     chassis_b.add_nic_with_id(1, nic_b);
     let ipv4_config = IpV4Config::default();
     ipv4_config.write().await.addr = IpV4Addr::new([192, 168, 0, 30]);
+    info!("Chassis B routing table:\n{}", ipv4_config.read().await.routing.print());
     let mut arp_b = ArpProcess::new(Some(ipv4_config.clone()), None);
     chassis_b.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
@@ -62,6 +63,7 @@ async fn main() {
             IpV4Mask::new(0),
             LinkLayerId::Ethernet(0, mac::BROADCAST),
         ));
+    info!("Chassis A routing table:\n{}", ipv4_config.read().await.routing.print());
     let mut arp_p = ArpProcess::new(Some(ipv4_config.clone()), None);
     let handle = arp_p.new_ipv4_handle();
     let tx = chassis_a.add_network_layer_process(
