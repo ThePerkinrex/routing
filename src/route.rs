@@ -26,6 +26,7 @@ impl<Addr, AddrMask, Iface> RoutingEntry<Addr, AddrMask, Iface> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutingTable<Addr, Mask, Iface> {
     data: Vec<RoutingEntry<Addr, Mask, Iface>>,
 }

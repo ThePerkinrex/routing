@@ -44,7 +44,7 @@ async fn main() {
     chassis_b.add_nic_with_id(1, nic_b);
     let ipv4_config = IpV4Config::default();
     ipv4_config.write().await.addr = IpV4Addr::new([192, 168, 0, 30]);
-    let mut arp_b = ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 30])), None);
+    let mut arp_b = ArpProcess::new(Some(ipv4_config.clone()), None);
     chassis_b.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,
         IpV4Process::new(ipv4_config, arp_b.new_ipv4_handle()),
@@ -62,7 +62,7 @@ async fn main() {
             IpV4Mask::new(0),
             LinkLayerId::Ethernet(0, mac::BROADCAST),
         ));
-    let mut arp_p = ArpProcess::new(Some(IpV4Addr::new([192, 168, 0, 31])), None);
+    let mut arp_p = ArpProcess::new(Some(ipv4_config.clone()), None);
     let handle = arp_p.new_ipv4_handle();
     let tx = chassis_a.add_network_layer_process(
         chassis::NetworkLayerId::Ipv4,

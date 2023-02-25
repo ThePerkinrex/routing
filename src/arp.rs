@@ -13,7 +13,7 @@ use crate::{
     },
     either::ThreeWayEither,
     ethernet::ethertype::EtherType,
-    ipv4::addr::IpV4Addr,
+    ipv4::{addr::IpV4Addr, config::IpV4Config},
     mac::{self, Mac},
 };
 
@@ -23,7 +23,7 @@ type IpV6Addr = IpV4Addr;
 
 #[derive(Debug)]
 pub struct ArpProcess {
-    ipv4: Option<(IpV4Addr, HashMap<IpV4Addr, Mac>)>,
+    ipv4: Option<(IpV4Config, HashMap<IpV4Addr, Mac>)>,
     ipv4_handle: (Option<Receiver<IpV4Addr>>, Option<Sender<Mac>>),
     ipv6: Option<(IpV6Addr, HashMap<IpV6Addr, Mac>)>,
 }
@@ -68,7 +68,7 @@ fn get_handle_pair<Addr, HAddr>() -> (ArpHandle<HAddr, Addr>, ArpHandle<Addr, HA
 }
 
 impl ArpProcess {
-    pub fn new(ipv4: Option<IpV4Addr>, ipv6: Option<IpV4Addr>) -> Self {
+    pub fn new(ipv4: Option<IpV4Config>, ipv6: Option<IpV4Addr>) -> Self {
         Self {
             ipv4: ipv4.map(|ip| (ip, HashMap::new())),
             ipv4_handle: (None, None),
@@ -121,7 +121,7 @@ impl
                             trace!("ARP: Tried to add pair {ip} -> {mac} to the table");
                         }
 
-                        if ip.as_slice() == arp_packet.target_protocol_address.as_slice() {
+                        if ip.read().await.addr.as_slice() == arp_packet.target_protocol_address.as_slice() {
                             match arp_packet.operation {
                                 Operation::Request => {
                                     // trace!(ARP = ?self, "Received ARP IPv4 Request packet: {arp_packet:?}");
@@ -129,7 +129,7 @@ impl
                                         arp_packet.htype,
                                         arp_packet.ptype,
                                         mac.as_slice().to_vec(),
-                                        ip.as_slice().to_vec(),
+                                        ip.read().await.addr.as_slice().to_vec(),
                                         arp_packet.sender_harware_address,
                                         arp_packet.sender_protocol_address,
                                     );
@@ -253,7 +253,7 @@ impl
                                         1,
                                         EtherType::IP_V4,
                                         sha.as_slice().to_vec(),
-                                        self.ipv4.as_ref().unwrap().0.as_slice().to_vec(),
+                                        self.ipv4.as_ref().unwrap().0.read().await.addr.as_slice().to_vec(),
                                         ip.as_slice().to_vec(),
                                     );
                                     let _ = sender
