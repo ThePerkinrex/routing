@@ -71,11 +71,13 @@ impl Nic {
         )
     }
 
-    pub fn join(conn: Option<(Sender<EthernetPacket>, Receiver<EthernetPacket>)>,
-    mac: Mac,) -> Self {
+    pub fn join(
+        conn: Option<(Sender<EthernetPacket>, Receiver<EthernetPacket>)>,
+        mac: Mac,
+    ) -> Self {
         Self {
             conn: conn.map(|(tx, rx)| DuplexBarrage { tx, rx }),
-            addr: mac
+            addr: mac,
         }
     }
 }

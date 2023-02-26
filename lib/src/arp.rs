@@ -121,7 +121,9 @@ impl
                             trace!("ARP: Tried to add pair {ip} -> {mac} to the table");
                         }
 
-                        if ip.read().await.addr.as_slice() == arp_packet.target_protocol_address.as_slice() {
+                        if ip.read().await.addr.as_slice()
+                            == arp_packet.target_protocol_address.as_slice()
+                        {
                             match arp_packet.operation {
                                 Operation::Request => {
                                     // trace!(ARP = ?self, "Received ARP IPv4 Request packet: {arp_packet:?}");
@@ -253,7 +255,15 @@ impl
                                         1,
                                         EtherType::IP_V4,
                                         sha.as_slice().to_vec(),
-                                        self.ipv4.as_ref().unwrap().0.read().await.addr.as_slice().to_vec(),
+                                        self.ipv4
+                                            .as_ref()
+                                            .unwrap()
+                                            .0
+                                            .read()
+                                            .await
+                                            .addr
+                                            .as_slice()
+                                            .to_vec(),
                                         ip.as_slice().to_vec(),
                                     );
                                     let _ = sender

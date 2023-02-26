@@ -9,7 +9,10 @@ use crate::{
         LinkLayerId, LinkNetworkPayload, MidLevelProcess, NetworkLayerId, NetworkTransportMessage,
         NetworkTransportPayload, ProcessMessage, TransportLayerId,
     },
-    ipv4::{packet::{IpV4Header, Ipv4Packet}, self},
+    ipv4::{
+        self,
+        packet::{IpV4Header, Ipv4Packet},
+    },
     mac::{self, Mac},
 };
 
@@ -65,11 +68,21 @@ impl
                     protocol::ProtocolType::TCP => Some(TransportLayerId::Tcp),
                     protocol::ProtocolType::UDP => Some(TransportLayerId::Udp),
                     protocol::ProtocolType::ICMP => Some(TransportLayerId::Icmp),
-                    x => {warn!(IP = ?ip, "Unknown IP protocol: {x:?}"); None}
+                    x => {
+                        warn!(IP = ?ip, "Unknown IP protocol: {x:?}");
+                        None
+                    }
                 } {
-                    
                     if let Some(sender) = up_sender.get(&up_id) {
-                        let _ = sender.send_async(ProcessMessage::Message(NetworkLayerId::Ipv4, NetworkTransportMessage::IPv4(ip_packet.header.source, ip_packet.payload))).await;
+                        let _ = sender
+                            .send_async(ProcessMessage::Message(
+                                NetworkLayerId::Ipv4,
+                                NetworkTransportMessage::IPv4(
+                                    ip_packet.header.source,
+                                    ip_packet.payload,
+                                ),
+                            ))
+                            .await;
                     }
                 }
             } else if ip_packet.header.time_to_live > 0 {

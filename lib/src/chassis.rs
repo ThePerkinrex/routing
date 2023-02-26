@@ -44,7 +44,7 @@ pub enum NetworkLayerId {
 pub enum TransportLayerId {
     Tcp,
     Udp,
-    Icmp
+    Icmp,
 }
 
 pub enum ProcessMessage<SenderId, ReceiverId, Payload> {
@@ -79,7 +79,7 @@ type MidLayerProcessHandle<DownId, Id, UpId, DownPayload, UpPayload> = (
 pub struct NicHandle {
     connected: bool,
     disconnect: (Sender<()>, Receiver<()>),
-    connect: (Sender<Nic>, Receiver<Nic>)
+    connect: (Sender<Nic>, Receiver<Nic>),
 }
 
 impl NicHandle {
@@ -87,7 +87,7 @@ impl NicHandle {
         if self.connected {
             warn!("Didnt connect NIC");
             Some(nic)
-        }else{
+        } else {
             self.connect.0.send_async(nic).await.ok()?;
             self.connect.1.recv_async().await.ok()
         }
@@ -95,9 +95,11 @@ impl NicHandle {
 
     pub async fn disconnect(&mut self, nic: Nic) -> bool {
         if self.connected {
-            if self.connect.0.send_async(nic).await.is_err() {return false}
+            if self.connect.0.send_async(nic).await.is_err() {
+                return false;
+            }
             self.connect.1.recv_async().await.is_ok()
-        }else{
+        } else {
             false
         }
     }
@@ -198,7 +200,6 @@ impl Chassis {
                                                         warn!(NIC = ?addr,"No IPv4 process to send packet")
                                                     }
                                                 }
-    
                                                 EtherType::ARP => {
                                                     if let Some(sender) = up_link.tx.get(&NetworkLayerId::Arp) {
                                                         let _ = sender.send_async(ProcessMessage::Message(id, (eth_packet.get_source(), eth_packet.payload))).await.map_err(|e| warn!("Cant send arp packet up: {e:?}"));

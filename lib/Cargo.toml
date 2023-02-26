@@ -1,0 +1,18 @@
+[package]
+name = "routing"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = "0.1"
+barrage = "0.2"
+bitflags = "1"
+derivative = "2"
+either = "1"
+flume = "0.10"
+futures = "0.3"
+prettytable = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tracing = "0.1"

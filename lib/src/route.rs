@@ -1,6 +1,6 @@
 // destination | gateway | mask | iface
 
-use std::{ops::BitAnd, fmt::Display};
+use std::{fmt::Display, ops::BitAnd};
 
 pub trait AddrMask<Addr>: BitAnd<Addr, Output = Addr> {
     type Specifity: Ord;
@@ -90,10 +90,21 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
     }
 }
 
-impl<Addr, AddrMask, Iface> RoutingTable<Addr, AddrMask, Iface> where Addr: Display, AddrMask: Display, Iface: Display {
+impl<Addr, AddrMask, Iface> RoutingTable<Addr, AddrMask, Iface>
+where
+    Addr: Display,
+    AddrMask: Display,
+    Iface: Display,
+{
     pub fn print(&self) -> prettytable::Table {
         let mut table = prettytable::table!(["destination", "mask", "gateway", "iface"]);
-        for RoutingEntry { destination, gateway, mask, iface } in self.data.iter() {
+        for RoutingEntry {
+            destination,
+            gateway,
+            mask,
+            iface,
+        } in self.data.iter()
+        {
             table.add_row(prettytable::row![destination, mask, gateway, iface]);
         }
         table
