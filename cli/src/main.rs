@@ -1,7 +1,7 @@
-use std::io::Write;
+use std::{io::Write, collections::HashMap};
 
 use clap::Parser;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 use routing::{
     arp::ArpProcess,
@@ -19,31 +19,121 @@ use routing::{
 
 #[derive(Debug, clap::Parser)]
 #[command(name=">")]
-enum Commands {
+enum GeneralCommands {
     Stop,
-    Hello {
-        #[arg(short, long)]
+    New {
         name: String
+    },
+    List,
+    Use {
+        name: String
+    },
+}
+
+#[derive(Debug, clap::Parser)]
+#[command(name=">")]
+enum ChassisCommands {
+    Exit,
+    
+    #[command(subcommand)]
+    IpV4(IpChassisCommands)
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum IpChassisCommands {
+    #[command(subcommand)]
+    Route(RouteCmd),
+    Set{
+        addr: IpV4Addr
+    },
+    Get,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum RouteCmd {
+    List,
+    Add {
+        destination: IpV4Addr,
+        mask: u8,
+        next_hop: IpV4Addr,
     }
 }
 mod arguments;
 
 #[tokio::main]
 async fn main() {
+    start().await
+}
+async fn start(){
     tracing_subscriber::fmt::init();
     info!("Started process");
     let mut buffer = String::new();
     let stdin = std::io::stdin(); // We get `Stdin` here.
+    let mut current_chassis = None;
+    let mut chassis = HashMap::new();
     loop {
         buffer.clear();
-        print!(" > ");
-        std::io::stdout().flush().unwrap();
-        stdin.read_line(&mut buffer).unwrap();
-        match Commands::try_parse_from(std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim()))) {
-            Ok(Commands::Stop) => {info!("stopping"); break}
-            Ok(x) => info!("cmd: {x:?}"),
-            Err(e) => error!("{e}"),
+        match current_chassis.as_ref() {
+            None => {
+                print!(" > ");
+                std::io::stdout().flush().unwrap();
+                stdin.read_line(&mut buffer).unwrap();
+                match GeneralCommands::try_parse_from(std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim()))) {
+                    Ok(GeneralCommands::Stop) => {info!("stopping"); break}
+                    #[allow(clippy::map_entry)]
+                    Ok(GeneralCommands::New { name }) => {
+                        if chassis.contains_key(&name) {
+                            warn!("Chassis with name `{name}` already exists");
+                            info!("Using chassis `{name}`");
+                            current_chassis = Some(name);
+                        }else{
+                            info!("Created new chassis with name: {name}");
+                            current_chassis = Some(name.clone());
+                            chassis.insert(name, (Chassis::new(), IpV4Config::default()));
+                        }
+                    }
+                    Ok(GeneralCommands::Use { name }) => {
+                        if chassis.contains_key(&name) {
+                            info!("Using chassis `{name}`");
+                            current_chassis = Some(name);
+                        }else{
+                            warn!("Chassis with name {name} doesn't exist")
+                        }
+                    }
+                    Ok(GeneralCommands::List) => {
+                        info!("Chassis list:");
+                        for (i, chassis) in chassis.keys().enumerate() {
+                            info!("   [{i}] {chassis}")
+                        }
+                    }
+                    Err(e) => error!("{e}"),
+                }
+            }
+            Some(name) => {
+                print!("({name}) > ");
+                let (chassis_struct, ipv4_config) = &chassis[name];
+                std::io::stdout().flush().unwrap();
+                stdin.read_line(&mut buffer).unwrap();
+                match ChassisCommands::try_parse_from(std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim()))) {
+                    Ok(ChassisCommands::Exit) => {info!("Exiting chassis `{name}`"); current_chassis = None}
+                    Ok(ChassisCommands::IpV4(IpChassisCommands::Route(cmd))) => match cmd {
+                        RouteCmd::List => {
+                            info!("Chassis {name} IPv4 routes:\n{}", ipv4_config.read().await.routing.print())
+                        },
+                        RouteCmd::Add { destination, mask, next_hop } => todo!(),
+                    }
+                    Ok(ChassisCommands::IpV4(IpChassisCommands::Set{addr})) => {
+                        info!("Setting chassis' {name} IPv4 addr to {addr}");
+                        ipv4_config.write().await.addr = addr;
+                    }
+                    Ok(ChassisCommands::IpV4(IpChassisCommands::Get)) => {
+                        info!("Chassis {name} IPv4 addr is {}", ipv4_config.read().await.addr);
+                    }
+                    Err(e) => error!("{e}"),
+                }
+            }
         }
+        
     }
     
     // let mut authority = mac::authority::SequentialAuthority::new([0, 0x69, 0x69]);

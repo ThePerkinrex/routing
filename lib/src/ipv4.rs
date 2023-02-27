@@ -25,11 +25,11 @@ pub mod protocol;
 
 pub struct IpV4Process {
     config: IpV4Config,
-    arp: ArpHandle<IpV4Addr, Mac>,
+    arp: ArpHandle<IpV4Addr, (Mac, LinkLayerId)>,
 }
 
 impl IpV4Process {
-    pub fn new(config: IpV4Config, arp: ArpHandle<IpV4Addr, Mac>) -> Self {
+    pub fn new(config: IpV4Config, arp: ArpHandle<IpV4Addr, (Mac, LinkLayerId)>) -> Self {
         Self { config, arp }
     }
 }
@@ -87,14 +87,14 @@ impl
                 }
             } else if ip_packet.header.time_to_live > 0 {
                 ip_packet.header.time_to_live -= 1;
-                if let Some((next_hop, iface)) = self
+                if let Some(next_hop) = self
                     .config
                     .read()
                     .await
                     .routing
                     .get_route(ip_packet.header.destination)
                 {
-                    if let Some(Ok(dest_mac)) = self
+                    if let Some(Ok((dest_mac, iface))) = self
                         .arp
                         .get_haddr_timeout(next_hop, std::time::Duration::from_secs(1))
                         .await
@@ -141,8 +141,8 @@ impl
             };
             let ip = self.config.read().await.addr;
             trace!(IP = ?ip, msg = ?msg, "Recieved packet from {up_id:?} towards {target_ip}");
-            if let Some((next_hop, iface)) = self.config.read().await.routing.get_route(target_ip) {
-                if let Some(Ok(dest_mac)) = self
+            if let Some(next_hop) = self.config.read().await.routing.get_route(target_ip) {
+                if let Some(Ok((dest_mac, iface))) = self
                     .arp
                     .get_haddr_timeout(next_hop, std::time::Duration::from_secs(1))
                     .await

@@ -8,35 +8,33 @@ pub trait AddrMask<Addr>: BitAnd<Addr, Output = Addr> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RoutingEntry<Addr, AddrMask, Iface> {
+pub struct RoutingEntry<Addr, AddrMask> {
     destination: Addr,
     gateway: Addr,
     mask: AddrMask,
-    iface: Iface,
 }
 
-impl<Addr, AddrMask, Iface> RoutingEntry<Addr, AddrMask, Iface> {
-    pub const fn new(destination: Addr, gateway: Addr, mask: AddrMask, iface: Iface) -> Self {
+impl<Addr, AddrMask> RoutingEntry<Addr, AddrMask> {
+    pub const fn new(destination: Addr, gateway: Addr, mask: AddrMask) -> Self {
         Self {
             destination,
             gateway,
             mask,
-            iface,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoutingTable<Addr, Mask, Iface> {
-    data: Vec<RoutingEntry<Addr, Mask, Iface>>,
+pub struct RoutingTable<Addr, Mask> {
+    data: Vec<RoutingEntry<Addr, Mask>>,
 }
 
-impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
+impl<Addr, Mask> RoutingTable<Addr, Mask> {
     pub const fn new() -> Self {
         Self { data: Vec::new() }
     }
 
-    pub fn add_route(&mut self, route: RoutingEntry<Addr, Mask, Iface>)
+    pub fn add_route(&mut self, route: RoutingEntry<Addr, Mask>)
     where
         Mask: AddrMask<Addr>,
     {
@@ -47,11 +45,10 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
         self.data.insert(i, route);
     }
 
-    pub fn remove_route(&mut self, route: &RoutingEntry<Addr, Mask, Iface>)
+    pub fn remove_route(&mut self, route: &RoutingEntry<Addr, Mask>)
     where
         Mask: AddrMask<Addr> + Eq,
         Addr: Eq,
-        Iface: Eq,
     {
         if let Some(i) =
             self.data
@@ -63,11 +60,10 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
         }
     }
 
-    pub fn get_route(&self, addr: Addr) -> Option<(Addr, Iface)>
+    pub fn get_route(&self, addr: Addr) -> Option<Addr>
     where
         Mask: AddrMask<Addr> + Clone,
         Addr: Clone + Eq,
-        Iface: Clone,
     {
         self.data
             .iter()
@@ -76,7 +72,6 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
                      destination: dest,
                      gateway: _,
                      mask,
-                     iface: _,
                  }| (mask.clone() & dest.clone()) == (mask.clone() & addr.clone()),
             )
             .map(
@@ -84,34 +79,31 @@ impl<Addr, Mask, Iface> RoutingTable<Addr, Mask, Iface> {
                      destination: _,
                      gateway,
                      mask: _,
-                     iface,
-                 }| (gateway.clone(), iface.clone()),
+                 }| gateway.clone(),
             )
     }
 }
 
-impl<Addr, AddrMask, Iface> RoutingTable<Addr, AddrMask, Iface>
+impl<Addr, AddrMask> RoutingTable<Addr, AddrMask>
 where
     Addr: Display,
     AddrMask: Display,
-    Iface: Display,
 {
     pub fn print(&self) -> prettytable::Table {
-        let mut table = prettytable::table!(["destination", "mask", "gateway", "iface"]);
+        let mut table = prettytable::table!(["destination", "mask", "gateway"]);
         for RoutingEntry {
             destination,
             gateway,
             mask,
-            iface,
         } in self.data.iter()
         {
-            table.add_row(prettytable::row![destination, mask, gateway, iface]);
+            table.add_row(prettytable::row![destination, mask, gateway]);
         }
         table
     }
 }
 
-impl<Addr, AddrMask, Iface> Default for RoutingTable<Addr, AddrMask, Iface> {
+impl<Addr, AddrMask> Default for RoutingTable<Addr, AddrMask> {
     fn default() -> Self {
         Self::new()
     }

@@ -79,26 +79,28 @@ type MidLayerProcessHandle<DownId, Id, UpId, DownPayload, UpPayload> = (
 pub struct NicHandle {
     connected: bool,
     disconnect: (Sender<()>, Receiver<()>),
-    connect: (Sender<Nic>, Receiver<Nic>),
+    connect: (Sender<()>, Receiver<(barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)>),
+    connect_to_net: (Sender<(barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)>, Receiver<()>),
 }
 
 impl NicHandle {
-    pub async fn connect(&mut self, nic: Nic) -> Option<Nic> {
-        if self.connected {
+    pub async fn connect_nic(&mut self, nic: &Nic) -> Option<Nic> {
+        if nic.is_up() {
             warn!("Didnt connect NIC");
-            Some(nic)
+            None
         } else {
-            self.connect.0.send_async(nic).await.ok()?;
-            self.connect.1.recv_async().await.ok()
+            self.connected = true;
+            self.connect.0.send_async(()).await.ok()?;
+            self.connect.1.recv_async().await.ok().map(|conn| Nic::join(Some(conn), nic.mac()))
         }
     }
 
     pub async fn disconnect(&mut self, nic: Nic) -> bool {
         if self.connected {
-            if self.connect.0.send_async(nic).await.is_err() {
+            if self.disconnect.0.send_async(()).await.is_err() {
                 return false;
             }
-            self.connect.1.recv_async().await.is_ok()
+            self.disconnect.1.recv_async().await.is_ok()
         } else {
             false
         }
@@ -155,12 +157,15 @@ impl Chassis {
         let id = LinkLayerId::Ethernet(id, nic.mac());
         let (conn_tx, conn_rx) = flume::unbounded();
         let (dconn_tx, dconn_rx) = flume::unbounded();
+        let (conn_net_tx, conn_net_rx) = flume::unbounded();
         let (conn_reply_tx, conn_reply_rx) = flume::unbounded();
         let (dconn_reply_tx, dconn_reply_rx) = flume::unbounded();
+        let (conn_net_reply_tx, conn_net_reply_rx) = flume::unbounded();
         let res = NicHandle {
             connected: nic.is_up(),
             disconnect: (dconn_tx, dconn_reply_rx),
             connect: (conn_tx, conn_reply_rx),
+            connect_to_net: (conn_net_tx, conn_net_reply_rx),
         };
         self.add_link_layer_process(id, move |mut up_link| async move {
             let (mut conn, addr) = nic.split();
@@ -275,11 +280,13 @@ impl Chassis {
                         }
                         tokio::task::yield_now().await
                     }
-                }else if let Ok(mut nic) = conn_rx.recv_async().await {
-                    let mut new_inner_nic = Nic::new_with_mac(addr);
-                    new_inner_nic.connect(&mut nic);
-                    conn_reply_tx.send_async(nic).await.unwrap();
-                    conn = new_inner_nic.split().0;
+                }else if conn_rx.recv_async().await == Ok(()) {
+                    let conn_b = conn.clone().unwrap_or_else(|| {
+                        let conn_b = barrage::unbounded();
+                        conn = Some(conn_b.clone());
+                        conn_b
+                    });
+                    conn_reply_tx.send_async(conn_b).await.unwrap();
                     continue 'state_change;
                 }
                 break

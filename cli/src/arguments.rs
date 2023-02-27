@@ -16,7 +16,7 @@ impl<'a> Iterator for ArgumentsIter<'a> {
 		}else{
 			let start = self.index;
 			// TODO find strings
-			let end = self.string.char_indices().skip_while(|(i, c)| *i < start).find(|(_, c)| c== &' ').map(|(i, _)| i).unwrap_or(self.string.len());
+			let end = self.string.char_indices().skip_while(|(i, _)| *i < start).find(|(_, c)| c== &' ').map(|(i, _)| i).unwrap_or(self.string.len());
 			self.index = end+1;
 			Some(&self.string[start..end])
 		}

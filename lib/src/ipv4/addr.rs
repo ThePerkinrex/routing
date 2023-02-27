@@ -1,6 +1,6 @@
 use std::{
     fmt::{Debug, Display},
-    ops::BitAnd,
+    ops::BitAnd, str::FromStr, num::ParseIntError, error::Error,
 };
 
 use tracing::debug;
@@ -10,6 +10,31 @@ use crate::route::AddrMask;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IpV4Addr {
     addr: [u8; 4],
+}
+
+#[derive(Debug, Clone)]
+pub enum IPv4ParseError {
+    ParseByteError(ParseIntError),
+    LengthError
+}
+
+impl Display for IPv4ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl Error for IPv4ParseError {}
+
+impl FromStr for IpV4Addr {
+    type Err = IPv4ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let split = s.split('.').map(u8::from_str).collect::<Result<Vec<_>, _>>().map_err(IPv4ParseError::ParseByteError)?;
+        
+        Ok(Self::new(split.try_into().map_err(|_| IPv4ParseError::LengthError)?))
+        
+    }
 }
 
 impl IpV4Addr {
@@ -59,6 +84,12 @@ impl IpV4Mask {
         // debug!("mask: {mask}");
         mask = mask.overflowing_shl(32 - self.0 as u32).0;
         mask.to_be_bytes()
+    }
+}
+
+impl From<u8> for IpV4Mask {
+    fn from(value: u8) -> Self {
+        Self::new(value)
     }
 }
 

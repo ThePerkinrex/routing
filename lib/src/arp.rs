@@ -23,9 +23,9 @@ type IpV6Addr = IpV4Addr;
 
 #[derive(Debug)]
 pub struct ArpProcess {
-    ipv4: Option<(IpV4Config, HashMap<IpV4Addr, Mac>)>,
-    ipv4_handle: (Option<Receiver<IpV4Addr>>, Option<Sender<Mac>>),
-    ipv6: Option<(IpV6Addr, HashMap<IpV6Addr, Mac>)>,
+    ipv4: Option<(IpV4Config, HashMap<IpV4Addr, (Mac, LinkLayerId)>)>,
+    ipv4_handle: (Option<Receiver<IpV4Addr>>, Option<Sender<(Mac, LinkLayerId)>>),
+    ipv6: Option<(IpV6Addr, HashMap<IpV6Addr, (Mac, LinkLayerId)>)>,
 }
 
 #[derive(Debug)]
@@ -76,7 +76,7 @@ impl ArpProcess {
         }
     }
 
-    pub fn new_ipv4_handle(&mut self) -> ArpHandle<IpV4Addr, Mac> {
+    pub fn new_ipv4_handle(&mut self) -> ArpHandle<IpV4Addr, (Mac, LinkLayerId)> {
         let (inner, ext) = get_handle_pair();
         self.ipv4_handle = (Some(inner.rx), Some(inner.tx));
         ext
@@ -117,7 +117,7 @@ impl
                         ) {
                             let ip = IpV4Addr::new(spa);
                             let mac = Mac::new(sha);
-                            table.entry(ip).or_insert(mac);
+                            table.entry(ip).or_insert((mac, down_id));
                             trace!("ARP: Tried to add pair {ip} -> {mac} to the table");
                         }
 
@@ -146,12 +146,12 @@ impl
                                     // trace!(ARP = ?self, "Received ARP IPv4 Reply packet: {arp_packet:?}");
                                     if let Some(tx) = self.ipv4_handle.1.as_ref() {
                                         let _ = tx
-                                            .send_async(Mac::new(
+                                            .send_async((Mac::new(
                                                 arp_packet
                                                     .sender_harware_address
                                                     .try_into()
                                                     .unwrap(),
-                                            ))
+                                            ), down_id))
                                             .await;
                                     }
                                 }
@@ -243,9 +243,9 @@ impl
         match msg {
             Ok(ip) => {
                 if let Some((_, table)) = self.ipv4.as_mut() {
-                    if let Some(addr) = table.get(&ip) {
+                    if let Some((addr, id)) = table.get(&ip) {
                         trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
-                        let _ = self.ipv4_handle.1.as_ref().unwrap().send_async(*addr).await;
+                        let _ = self.ipv4_handle.1.as_ref().unwrap().send_async((*addr, *id)).await;
                     } else {
                         trace!("ARP: Searching for MAC address for IPv4 {ip}");
                         for (id, sender) in down_sender {
