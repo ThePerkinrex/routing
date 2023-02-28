@@ -1,4 +1,9 @@
-use std::{fmt::{Debug, Display}, str::FromStr, error::Error, num::ParseIntError};
+use std::{
+    error::Error,
+    fmt::{Debug, Display},
+    num::ParseIntError,
+    str::FromStr,
+};
 
 pub mod authority;
 
@@ -7,11 +12,10 @@ pub struct Mac {
     addr: [u8; 6],
 }
 
-
 #[derive(Debug, Clone)]
 pub enum MacParseError {
     ParseByteError(ParseIntError),
-    LengthError
+    LengthError,
 }
 
 impl Display for MacParseError {
@@ -25,9 +29,15 @@ impl FromStr for Mac {
     type Err = MacParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let split = s.split('-').map(|s| u8::from_str_radix(s, 16)).collect::<Result<Vec<_>, _>>().map_err(MacParseError::ParseByteError)?;
-        
-        Ok(Self::new(split.try_into().map_err(|_| MacParseError::LengthError)?))
+        let split = s
+            .split('-')
+            .map(|s| u8::from_str_radix(s, 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(MacParseError::ParseByteError)?;
+
+        Ok(Self::new(
+            split.try_into().map_err(|_| MacParseError::LengthError)?,
+        ))
     }
 }
 

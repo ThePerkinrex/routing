@@ -79,8 +79,20 @@ type MidLayerProcessHandle<DownId, Id, UpId, DownPayload, UpPayload> = (
 pub struct NicHandle {
     connected: bool,
     disconnect: (Sender<()>, Receiver<()>),
-    connect: (Sender<()>, Receiver<(barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)>),
-    connect_to_net: (Sender<(barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)>, Receiver<()>),
+    connect: (
+        Sender<()>,
+        Receiver<(
+            barrage::Sender<EthernetPacket>,
+            barrage::Receiver<EthernetPacket>,
+        )>,
+    ),
+    connect_to_net: (
+        Sender<(
+            barrage::Sender<EthernetPacket>,
+            barrage::Receiver<EthernetPacket>,
+        )>,
+        Receiver<()>,
+    ),
 }
 
 impl NicHandle {
@@ -91,29 +103,45 @@ impl NicHandle {
         } else if self.connected {
             self.connected = true;
             self.connect.0.send_async(()).await.ok()?;
-            self.connect.1.recv_async().await.ok().map(|conn| Nic::join(Some(conn), nic.mac()))
-        }else{
+            self.connect
+                .1
+                .recv_async()
+                .await
+                .ok()
+                .map(|conn| Nic::join(Some(conn), nic.mac()))
+        } else {
             warn!("Didnt connect NIC");
             None
         }
     }
 
-    async fn get_connection_self(&self) -> Option<(barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)> {
-        if self.connected{
+    async fn get_connection_self(
+        &self,
+    ) -> Option<(
+        barrage::Sender<EthernetPacket>,
+        barrage::Receiver<EthernetPacket>,
+    )> {
+        if self.connected {
             self.connect.0.send_async(()).await.ok()?;
             self.connect.1.recv_async().await.ok()
-        }else{
+        } else {
             None
         }
     }
 
-    async fn set_connection_self(&mut self, conn: (barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)) -> Option<()> {
-        if !self.connected{
+    async fn set_connection_self(
+        &mut self,
+        conn: (
+            barrage::Sender<EthernetPacket>,
+            barrage::Receiver<EthernetPacket>,
+        ),
+    ) -> Option<()> {
+        if !self.connected {
             self.connect_to_net.0.send_async(conn).await.ok()?;
             self.connect_to_net.1.recv_async().await.ok()?;
             self.connected = true;
             Some(())
-        }else{
+        } else {
             None
         }
     }
@@ -123,24 +151,23 @@ impl NicHandle {
             (true, false) => {
                 if let Some(conn) = self.get_connection_self().await {
                     other.set_connection_self(conn).await.is_some()
-                }else{
+                } else {
                     false
                 }
             }
             (false, true) => {
                 if let Some(conn) = other.get_connection_self().await {
                     self.set_connection_self(conn).await.is_some()
-                }else{
+                } else {
                     false
                 }
             }
             (false, false) => {
                 let conn = barrage::unbounded();
-                self.set_connection_self(conn.clone()).await.is_some() && other.set_connection_self(conn).await.is_some()
+                self.set_connection_self(conn.clone()).await.is_some()
+                    && other.set_connection_self(conn).await.is_some()
             }
-            (true, true) => {
-                false
-            }
+            (true, true) => false,
         }
     }
 
@@ -160,7 +187,7 @@ impl NicHandle {
 
 impl Display for NicHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "state: {}", if self.connected {"UP"} else {"DOWN"})
+        write!(f, "state: {}", if self.connected { "UP" } else { "DOWN" })
     }
 }
 

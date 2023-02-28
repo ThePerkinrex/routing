@@ -1,6 +1,9 @@
 use std::{
+    error::Error,
     fmt::{Debug, Display},
-    ops::BitAnd, str::FromStr, num::ParseIntError, error::Error,
+    num::ParseIntError,
+    ops::BitAnd,
+    str::FromStr,
 };
 
 use tracing::debug;
@@ -15,7 +18,7 @@ pub struct IpV4Addr {
 #[derive(Debug, Clone)]
 pub enum IPv4ParseError {
     ParseByteError(ParseIntError),
-    LengthError
+    LengthError,
 }
 
 impl Display for IPv4ParseError {
@@ -30,10 +33,15 @@ impl FromStr for IpV4Addr {
     type Err = IPv4ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let split = s.split('.').map(u8::from_str).collect::<Result<Vec<_>, _>>().map_err(IPv4ParseError::ParseByteError)?;
-        
-        Ok(Self::new(split.try_into().map_err(|_| IPv4ParseError::LengthError)?))
-        
+        let split = s
+            .split('.')
+            .map(u8::from_str)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(IPv4ParseError::ParseByteError)?;
+
+        Ok(Self::new(
+            split.try_into().map_err(|_| IPv4ParseError::LengthError)?,
+        ))
     }
 }
 

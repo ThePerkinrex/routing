@@ -1,12 +1,12 @@
-use std::{io::Write, collections::HashMap, ops::DerefMut};
+use std::{collections::HashMap, io::Write, ops::DerefMut};
 
 use clap::Parser;
 use tokio::sync::RwLock;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 use routing::{
     arp::ArpProcess,
-    chassis::{self, Chassis, LinkLayerId, ProcessMessage, TransportLayerId, NicHandle},
+    chassis::{self, Chassis, LinkLayerId, NicHandle, ProcessMessage, TransportLayerId},
     ethernet::nic::Nic,
     ipv4::{
         self,
@@ -19,34 +19,30 @@ use routing::{
 };
 
 #[derive(Debug, clap::Parser)]
-#[command(name=">")]
+#[command(name = ">")]
 enum GeneralCommands {
     Stop,
-    New {
-        name: String
-    },
+    New { name: String },
     List,
-    Use {
-        name: String
-    },
+    Use { name: String },
 }
 
 #[derive(Debug, clap::Parser)]
-#[command(name=">")]
+#[command(name = ">")]
 enum ChassisCommands {
     Exit,
     #[command(subcommand)]
     Link(LinkCmd),
     #[command(subcommand)]
-    IpV4(IpChassisCommands)
+    IpV4(IpChassisCommands),
 }
 
 #[derive(Debug, clap::Subcommand)]
 enum IpChassisCommands {
     #[command(subcommand)]
     Route(RouteCmd),
-    Set{
-        addr: IpV4Addr
+    Set {
+        addr: IpV4Addr,
     },
     Get,
 }
@@ -58,7 +54,7 @@ enum RouteCmd {
         destination: IpV4Addr,
         mask: u8,
         next_hop: IpV4Addr,
-    }
+    },
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -67,19 +63,19 @@ enum LinkCmd {
     Add {
         link_type: LinkType,
         id: u16,
-        mac: Mac
+        mac: Mac,
     },
     Connect {
         link_type: LinkType,
         id: u16,
         other_chassis: String,
-        other_id: u16
-    }
+        other_id: u16,
+    },
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum LinkType {
-    Eth
+    Eth,
 }
 
 mod arguments;
@@ -88,7 +84,7 @@ mod arguments;
 async fn main() {
     start().await
 }
-async fn start(){
+async fn start() {
     tracing_subscriber::fmt::init();
     info!("Started process");
     let mut buffer = String::new();
@@ -102,25 +98,37 @@ async fn start(){
                 print!(" > ");
                 std::io::stdout().flush().unwrap();
                 stdin.read_line(&mut buffer).unwrap();
-                match GeneralCommands::try_parse_from(std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim()))) {
-                    Ok(GeneralCommands::Stop) => {info!("stopping"); break}
+                match GeneralCommands::try_parse_from(
+                    std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim())),
+                ) {
+                    Ok(GeneralCommands::Stop) => {
+                        info!("stopping");
+                        break;
+                    }
                     #[allow(clippy::map_entry)]
                     Ok(GeneralCommands::New { name }) => {
                         if chassis.contains_key(&name) {
                             warn!("Chassis with name `{name}` already exists");
                             info!("Using chassis `{name}`");
                             current_chassis = Some(name);
-                        }else{
+                        } else {
                             info!("Created new chassis with name: {name}");
                             current_chassis = Some(name.clone());
-                            chassis.insert(name, RwLock::new((Chassis::new(), IpV4Config::default(), HashMap::<LinkLayerId, NicHandle>::default())));
+                            chassis.insert(
+                                name,
+                                RwLock::new((
+                                    Chassis::new(),
+                                    IpV4Config::default(),
+                                    HashMap::<LinkLayerId, NicHandle>::default(),
+                                )),
+                            );
                         }
                     }
                     Ok(GeneralCommands::Use { name }) => {
                         if chassis.contains_key(&name) {
                             info!("Using chassis `{name}`");
                             current_chassis = Some(name);
-                        }else{
+                        } else {
                             warn!("Chassis with name {name} doesn't exist")
                         }
                     }
@@ -139,20 +147,37 @@ async fn start(){
                 let (chassis_struct, ipv4_config, link_level_handles) = guard.deref_mut();
                 std::io::stdout().flush().unwrap();
                 stdin.read_line(&mut buffer).unwrap();
-                match ChassisCommands::try_parse_from(std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim()))) {
-                    Ok(ChassisCommands::Exit) => {info!("Exiting chassis `{name}`"); current_chassis = None}
+                match ChassisCommands::try_parse_from(
+                    std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim())),
+                ) {
+                    Ok(ChassisCommands::Exit) => {
+                        info!("Exiting chassis `{name}`");
+                        current_chassis = None
+                    }
                     Ok(ChassisCommands::Link(cmd)) => match cmd {
                         LinkCmd::List => {
                             info!("Chassis {name} interfaces:");
                             for (iface, handle) in link_level_handles.iter() {
                                 info!("{iface:<5} {}", handle);
                             }
-                        },
-                        LinkCmd::Add { link_type: LinkType::Eth, id, mac } => {
-                            link_level_handles.insert(LinkLayerId::Ethernet(id, mac), chassis_struct.add_nic_with_id(id, Nic::new_with_mac(mac)));
+                        }
+                        LinkCmd::Add {
+                            link_type: LinkType::Eth,
+                            id,
+                            mac,
+                        } => {
+                            link_level_handles.insert(
+                                LinkLayerId::Ethernet(id, mac),
+                                chassis_struct.add_nic_with_id(id, Nic::new_with_mac(mac)),
+                            );
                             info!("NIC added");
-                        },
-                        LinkCmd::Connect { link_type: LinkType::Eth, id, other_chassis, other_id } => {
+                        }
+                        LinkCmd::Connect {
+                            link_type: LinkType::Eth,
+                            id,
+                            other_chassis,
+                            other_id,
+                        } => {
                             let self_id = LinkLayerId::Ethernet(id, mac::BROADCAST);
                             let other_id = LinkLayerId::Ethernet(other_id, mac::BROADCAST);
                             if let Some(guard) = chassis.get(&other_chassis) {
@@ -162,40 +187,49 @@ async fn start(){
                                     if let Some(other_handle) = other_handles.get_mut(&other_id) {
                                         if handle.connect_other(other_handle).await {
                                             info!("Connected");
-                                        }else{
+                                        } else {
                                             warn!("Didn't connect")
                                         }
-                                    }else{
+                                    } else {
                                         warn!("Chassis `{other_chassis}` doesn't have interface {other_id}")
                                     }
-                                }else{
+                                } else {
                                     warn!("Chassis `{name}` doesn't have interface {self_id}")
                                 }
-                            }else {
+                            } else {
                                 warn!("Chassis `{other_chassis}` doesn't exist")
                             }
-                        },
-                    }
+                        }
+                    },
                     Ok(ChassisCommands::IpV4(IpChassisCommands::Route(cmd))) => match cmd {
                         RouteCmd::List => {
-                            info!("Chassis {name} IPv4 routes:\n{}", ipv4_config.read().await.routing.print())
-                        },
-                        RouteCmd::Add { destination, mask, next_hop } => todo!(),
-                    }
-                    Ok(ChassisCommands::IpV4(IpChassisCommands::Set{addr})) => {
+                            info!(
+                                "Chassis {name} IPv4 routes:\n{}",
+                                ipv4_config.read().await.routing.print()
+                            )
+                        }
+                        RouteCmd::Add {
+                            destination,
+                            mask,
+                            next_hop,
+                        } => todo!(),
+                    },
+                    Ok(ChassisCommands::IpV4(IpChassisCommands::Set { addr })) => {
                         info!("Setting chassis' {name} IPv4 addr to {addr}");
                         ipv4_config.write().await.addr = addr;
                     }
                     Ok(ChassisCommands::IpV4(IpChassisCommands::Get)) => {
-                        info!("Chassis {name} IPv4 addr is {}", ipv4_config.read().await.addr);
+                        info!(
+                            "Chassis {name} IPv4 addr is {}",
+                            ipv4_config.read().await.addr
+                        );
                     }
                     Err(e) => error!("{e}"),
                 }
             }
         }
-        
     }
-    
+
     // let mut authority = mac::authority::SequentialAuthority::new([0, 0x69, 0x69]);
     // let nic_a = Nic::new(&mut authority);
     // let mut nic_b = Nic::new(&mut authority);

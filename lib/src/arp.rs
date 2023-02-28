@@ -3,7 +3,7 @@ use flume::{Receiver, RecvError, Sender};
 use tokio::task::JoinSet;
 use tracing::{trace, warn};
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     arp::packet::{ArpPacket, Operation},
@@ -24,63 +24,44 @@ type IpV6Addr = IpV4Addr;
 #[derive(Debug)]
 pub struct ArpProcess {
     ipv4: Option<(IpV4Config, HashMap<IpV4Addr, (Mac, LinkLayerId)>)>,
-    ipv4_handle: (Option<Receiver<IpV4Addr>>, Option<Sender<(Mac, LinkLayerId)>>),
+    ipv4_handle: Option<(Arc<Receiver<IpV4Addr>>, Sender<(Mac, LinkLayerId)>)>,
     ipv6: Option<(IpV6Addr, HashMap<IpV6Addr, (Mac, LinkLayerId)>)>,
-}
-
-#[derive(Debug)]
-pub struct ArpHandle<Addr, HAddr> {
-    rx: Receiver<HAddr>,
-    tx: Sender<Addr>,
-}
-
-impl<Addr, HAddr> ArpHandle<Addr, HAddr>
-where
-    Addr: Send,
-    HAddr: Send,
-{
-    pub async fn get_haddr(
-        &self,
-        addr: Addr,
-    ) -> Result<HAddr, either::Either<flume::SendError<Addr>, RecvError>> {
-        self.tx.send_async(addr).await.map_err(Either::Left)?;
-        self.rx.recv_async().await.map_err(Either::Right)
-    }
-
-    pub async fn get_haddr_timeout(
-        &self,
-        addr: Addr,
-        timeout: Duration,
-    ) -> Option<Result<HAddr, either::Either<flume::SendError<Addr>, RecvError>>> {
-        tokio::time::timeout(timeout, self.get_haddr(addr))
-            .await
-            .ok()
-    }
-}
-
-fn get_handle_pair<Addr, HAddr>() -> (ArpHandle<HAddr, Addr>, ArpHandle<Addr, HAddr>) {
-    let (tx1, rx1) = flume::unbounded();
-    let (tx2, rx2) = flume::unbounded();
-    (
-        ArpHandle { tx: tx1, rx: rx2 },
-        ArpHandle { tx: tx2, rx: rx1 },
-    )
+    get_new_ipv4_handle: (
+        Arc<Receiver<()>>,
+        Sender<ArpHandle<IpV4Addr, (Mac, LinkLayerId)>>,
+    ),
 }
 
 impl ArpProcess {
-    pub fn new(ipv4: Option<IpV4Config>, ipv6: Option<IpV4Addr>) -> Self {
-        Self {
-            ipv4: ipv4.map(|ip| (ip, HashMap::new())),
-            ipv4_handle: (None, None),
-            ipv6: ipv6.map(|ip| (ip, HashMap::new())),
-        }
+    pub fn new(ipv4: Option<IpV4Config>, ipv6: Option<IpV4Addr>) -> (Self, GenericArpHandle) {
+        let (new_ipv4_handle_external_tx, new_ipv4_handle_internal_rx) = flume::unbounded();
+        let (new_ipv4_handle_internal_tx, new_ipv4_handle_external_rx) = flume::unbounded();
+        (
+            Self {
+                ipv4: ipv4.map(|ip| (ip, HashMap::new())),
+                ipv4_handle: None,
+                ipv6: ipv6.map(|ip| (ip, HashMap::new())),
+                get_new_ipv4_handle: (
+                    Arc::new(new_ipv4_handle_internal_rx),
+                    new_ipv4_handle_internal_tx,
+                ),
+            },
+            GenericArpHandle {
+                get_new_ipv4_handle: (new_ipv4_handle_external_tx, new_ipv4_handle_external_rx),
+            },
+        )
     }
 
     pub fn new_ipv4_handle(&mut self) -> ArpHandle<IpV4Addr, (Mac, LinkLayerId)> {
         let (inner, ext) = get_handle_pair();
-        self.ipv4_handle = (Some(inner.rx), Some(inner.tx));
+        self.ipv4_handle = Some((Arc::new(inner.rx), inner.tx));
         ext
     }
+}
+
+pub enum ExtraMessage {
+    GetIpV4(Result<IpV4Addr, RecvError>),
+    NewIpV4(Result<(), RecvError>),
 }
 
 #[async_trait::async_trait]
@@ -144,14 +125,18 @@ impl
                                 }
                                 Operation::Reply => {
                                     // trace!(ARP = ?self, "Received ARP IPv4 Reply packet: {arp_packet:?}");
-                                    if let Some(tx) = self.ipv4_handle.1.as_ref() {
+
+                                    if let Some((_, tx)) = self.ipv4_handle.as_ref() {
                                         let _ = tx
-                                            .send_async((Mac::new(
-                                                arp_packet
-                                                    .sender_harware_address
-                                                    .try_into()
-                                                    .unwrap(),
-                                            ), down_id))
+                                            .send_async((
+                                                Mac::new(
+                                                    arp_packet
+                                                        .sender_harware_address
+                                                        .try_into()
+                                                        .unwrap(),
+                                                ),
+                                                down_id,
+                                            ))
                                             .await;
                                     }
                                 }
@@ -201,7 +186,7 @@ impl
         //         .unwrap();
         // }
     }
-    type Extra = ReceptionResult<IpV4Addr>;
+    type Extra = ExtraMessage;
 
     async fn setup(
         &mut self,
@@ -215,13 +200,20 @@ impl
             >,
         >,
     ) {
-        if let Some(rx) = self.ipv4_handle.0.take() {
-            join_set.spawn(async move { ThreeWayEither::C((rx.recv_async().await, rx)) });
+        let new_rx = self.get_new_ipv4_handle.0.clone();
+        join_set.spawn(async move {
+            ThreeWayEither::C(ExtraMessage::NewIpV4(new_rx.recv_async().await))
+        });
+        if let Some((rx, _)) = self.ipv4_handle.as_ref() {
+            let rx = rx.clone();
+            join_set.spawn(async move {
+                ThreeWayEither::C(ExtraMessage::GetIpV4(rx.recv_async().await))
+            });
         }
     }
     async fn on_extra_message(
         &mut self,
-        (msg, rx): Self::Extra,
+        msg: Self::Extra,
         down_sender: &HashMap<
             LinkLayerId,
             Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
@@ -241,45 +233,128 @@ impl
         >,
     ) {
         match msg {
-            Ok(ip) => {
-                if let Some((_, table)) = self.ipv4.as_mut() {
-                    if let Some((addr, id)) = table.get(&ip) {
-                        trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
-                        let _ = self.ipv4_handle.1.as_ref().unwrap().send_async((*addr, *id)).await;
-                    } else {
-                        trace!("ARP: Searching for MAC address for IPv4 {ip}");
-                        for (id, sender) in down_sender {
-                            match id {
-                                LinkLayerId::Ethernet(_, sha) => {
-                                    let packet = ArpPacket::new_request(
-                                        1,
-                                        EtherType::IP_V4,
-                                        sha.as_slice().to_vec(),
-                                        self.ipv4
-                                            .as_ref()
-                                            .unwrap()
-                                            .0
-                                            .read()
-                                            .await
-                                            .addr
-                                            .as_slice()
-                                            .to_vec(),
-                                        ip.as_slice().to_vec(),
-                                    );
-                                    let _ = sender
-                                        .send_async(ProcessMessage::Message(
-                                            NetworkLayerId::Arp,
-                                            (mac::BROADCAST, packet.to_vec()),
-                                        ))
-                                        .await;
+            ExtraMessage::NewIpV4(r) => {
+                match r {
+                    Ok(()) => {
+                        let handle = self.new_ipv4_handle();
+                        let _ = self.get_new_ipv4_handle.1.send_async(handle).await;
+                        if let Some((rx, _)) = self.ipv4_handle.as_ref() {
+                            let rx = rx.clone();
+                            join_set.spawn(async move {
+                                ThreeWayEither::C(ExtraMessage::GetIpV4(rx.recv_async().await))
+                            });
+                        }
+                    }
+                    Err(e) => warn!(ARP = ?self, "Error receiving extra message: {e:?}"),
+                }
+                let new_rx = self.get_new_ipv4_handle.0.clone();
+                join_set.spawn(async move {
+                    ThreeWayEither::C(ExtraMessage::NewIpV4(new_rx.recv_async().await))
+                });
+            }
+            ExtraMessage::GetIpV4(ip) => match ip {
+                Ok(ip) => {
+                    if let Some(ipv4_handle) = &self.ipv4_handle {
+                        if let Some((_, table)) = self.ipv4.as_mut() {
+                            if let Some((addr, id)) = table.get(&ip) {
+                                trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
+                                let _ = ipv4_handle.1.send_async((*addr, *id)).await;
+                            } else {
+                                trace!("ARP: Searching for MAC address for IPv4 {ip}");
+                                for (id, sender) in down_sender {
+                                    match id {
+                                        LinkLayerId::Ethernet(_, sha) => {
+                                            let packet = ArpPacket::new_request(
+                                                1,
+                                                EtherType::IP_V4,
+                                                sha.as_slice().to_vec(),
+                                                self.ipv4
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .0
+                                                    .read()
+                                                    .await
+                                                    .addr
+                                                    .as_slice()
+                                                    .to_vec(),
+                                                ip.as_slice().to_vec(),
+                                            );
+                                            let _ = sender
+                                                .send_async(ProcessMessage::Message(
+                                                    NetworkLayerId::Arp,
+                                                    (mac::BROADCAST, packet.to_vec()),
+                                                ))
+                                                .await;
+                                        }
+                                    }
                                 }
                             }
                         }
+                        let ip_v4_rx = ipv4_handle.0.clone();
+                        join_set.spawn(async move {
+                            ThreeWayEither::C(ExtraMessage::GetIpV4(ip_v4_rx.recv_async().await))
+                        });
+                    } else {
+                        warn!("ARP: No IPv4 Handle");
                     }
                 }
-            }
-            Err(e) => warn!(ARP = ?self, "Error receiving extra message: {e:?}"),
+                Err(RecvError::Disconnected) => {
+                    warn!(ARP = ?self, "Disconnected IPv4 handle");
+                    self.ipv4_handle = None;
+                }
+            },
         }
-        join_set.spawn(async move { ThreeWayEither::C((rx.recv_async().await, rx)) });
+    }
+}
+#[derive(Debug)]
+pub struct ArpHandle<Addr, HAddr> {
+    rx: Receiver<HAddr>,
+    tx: Sender<Addr>,
+}
+
+impl<Addr, HAddr> ArpHandle<Addr, HAddr>
+where
+    Addr: Send,
+    HAddr: Send,
+{
+    pub async fn get_haddr(
+        &self,
+        addr: Addr,
+    ) -> Result<HAddr, either::Either<flume::SendError<Addr>, RecvError>> {
+        self.tx.send_async(addr).await.map_err(Either::Left)?;
+        self.rx.recv_async().await.map_err(Either::Right)
+    }
+
+    pub async fn get_haddr_timeout(
+        &self,
+        addr: Addr,
+        timeout: Duration,
+    ) -> Option<Result<HAddr, either::Either<flume::SendError<Addr>, RecvError>>> {
+        tokio::time::timeout(timeout, self.get_haddr(addr))
+            .await
+            .ok()
+    }
+}
+
+fn get_handle_pair<Addr, HAddr>() -> (ArpHandle<HAddr, Addr>, ArpHandle<Addr, HAddr>) {
+    let (tx1, rx1) = flume::unbounded();
+    let (tx2, rx2) = flume::unbounded();
+    (
+        ArpHandle { tx: tx1, rx: rx2 },
+        ArpHandle { tx: tx2, rx: rx1 },
+    )
+}
+
+pub struct GenericArpHandle {
+    get_new_ipv4_handle: (
+        Sender<()>,
+        Receiver<ArpHandle<IpV4Addr, (Mac, LinkLayerId)>>,
+    ),
+}
+
+impl GenericArpHandle {
+    pub async fn get_new_ipv4_handle(&self) -> Option<ArpHandle<IpV4Addr, (Mac, LinkLayerId)>> {
+        self.get_new_ipv4_handle.0.send_async(()).await.ok()?;
+        self.get_new_ipv4_handle.1.recv_async().await.ok()
     }
 }
