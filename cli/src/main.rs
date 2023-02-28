@@ -1,11 +1,12 @@
-use std::{io::Write, collections::HashMap};
+use std::{io::Write, collections::HashMap, ops::DerefMut};
 
 use clap::Parser;
+use tokio::sync::RwLock;
 use tracing::{info, error, warn};
 
 use routing::{
     arp::ArpProcess,
-    chassis::{self, Chassis, LinkLayerId, ProcessMessage, TransportLayerId},
+    chassis::{self, Chassis, LinkLayerId, ProcessMessage, TransportLayerId, NicHandle},
     ethernet::nic::Nic,
     ipv4::{
         self,
@@ -13,7 +14,7 @@ use routing::{
         config::IpV4Config,
         IpV4Process,
     },
-    mac::{self},
+    mac::{self, Mac},
     route::RoutingEntry,
 };
 
@@ -34,7 +35,8 @@ enum GeneralCommands {
 #[command(name=">")]
 enum ChassisCommands {
     Exit,
-    
+    #[command(subcommand)]
+    Link(LinkCmd),
     #[command(subcommand)]
     IpV4(IpChassisCommands)
 }
@@ -58,6 +60,28 @@ enum RouteCmd {
         next_hop: IpV4Addr,
     }
 }
+
+#[derive(Debug, clap::Subcommand)]
+enum LinkCmd {
+    List,
+    Add {
+        link_type: LinkType,
+        id: u16,
+        mac: Mac
+    },
+    Connect {
+        link_type: LinkType,
+        id: u16,
+        other_chassis: String,
+        other_id: u16
+    }
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum LinkType {
+    Eth
+}
+
 mod arguments;
 
 #[tokio::main]
@@ -89,7 +113,7 @@ async fn start(){
                         }else{
                             info!("Created new chassis with name: {name}");
                             current_chassis = Some(name.clone());
-                            chassis.insert(name, (Chassis::new(), IpV4Config::default()));
+                            chassis.insert(name, RwLock::new((Chassis::new(), IpV4Config::default(), HashMap::<LinkLayerId, NicHandle>::default())));
                         }
                     }
                     Ok(GeneralCommands::Use { name }) => {
@@ -111,11 +135,47 @@ async fn start(){
             }
             Some(name) => {
                 print!("({name}) > ");
-                let (chassis_struct, ipv4_config) = &chassis[name];
+                let mut guard = chassis.get(name).unwrap().write().await;
+                let (chassis_struct, ipv4_config, link_level_handles) = guard.deref_mut();
                 std::io::stdout().flush().unwrap();
                 stdin.read_line(&mut buffer).unwrap();
                 match ChassisCommands::try_parse_from(std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim()))) {
                     Ok(ChassisCommands::Exit) => {info!("Exiting chassis `{name}`"); current_chassis = None}
+                    Ok(ChassisCommands::Link(cmd)) => match cmd {
+                        LinkCmd::List => {
+                            info!("Chassis {name} interfaces:");
+                            for (iface, handle) in link_level_handles.iter() {
+                                info!("{iface:<5} {}", handle);
+                            }
+                        },
+                        LinkCmd::Add { link_type: LinkType::Eth, id, mac } => {
+                            link_level_handles.insert(LinkLayerId::Ethernet(id, mac), chassis_struct.add_nic_with_id(id, Nic::new_with_mac(mac)));
+                            info!("NIC added");
+                        },
+                        LinkCmd::Connect { link_type: LinkType::Eth, id, other_chassis, other_id } => {
+                            let self_id = LinkLayerId::Ethernet(id, mac::BROADCAST);
+                            let other_id = LinkLayerId::Ethernet(other_id, mac::BROADCAST);
+                            if let Some(guard) = chassis.get(&other_chassis) {
+                                let mut guard = guard.write().await;
+                                let other_handles = &mut guard.2;
+                                if let Some(handle) = link_level_handles.get_mut(&self_id) {
+                                    if let Some(other_handle) = other_handles.get_mut(&other_id) {
+                                        if handle.connect_other(other_handle).await {
+                                            info!("Connected");
+                                        }else{
+                                            warn!("Didn't connect")
+                                        }
+                                    }else{
+                                        warn!("Chassis `{other_chassis}` doesn't have interface {other_id}")
+                                    }
+                                }else{
+                                    warn!("Chassis `{name}` doesn't have interface {self_id}")
+                                }
+                            }else {
+                                warn!("Chassis `{other_chassis}` doesn't exist")
+                            }
+                        },
+                    }
                     Ok(ChassisCommands::IpV4(IpChassisCommands::Route(cmd))) => match cmd {
                         RouteCmd::List => {
                             info!("Chassis {name} IPv4 routes:\n{}", ipv4_config.read().await.routing.print())

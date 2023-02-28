@@ -88,22 +88,79 @@ impl NicHandle {
         if nic.is_up() {
             warn!("Didnt connect NIC");
             None
-        } else {
+        } else if self.connected {
             self.connected = true;
             self.connect.0.send_async(()).await.ok()?;
             self.connect.1.recv_async().await.ok().map(|conn| Nic::join(Some(conn), nic.mac()))
+        }else{
+            warn!("Didnt connect NIC");
+            None
         }
     }
 
-    pub async fn disconnect(&mut self, nic: Nic) -> bool {
+    async fn get_connection_self(&self) -> Option<(barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)> {
+        if self.connected{
+            self.connect.0.send_async(()).await.ok()?;
+            self.connect.1.recv_async().await.ok()
+        }else{
+            None
+        }
+    }
+
+    async fn set_connection_self(&mut self, conn: (barrage::Sender<EthernetPacket>, barrage::Receiver<EthernetPacket>)) -> Option<()> {
+        if !self.connected{
+            self.connect_to_net.0.send_async(conn).await.ok()?;
+            self.connect_to_net.1.recv_async().await.ok()?;
+            self.connected = true;
+            Some(())
+        }else{
+            None
+        }
+    }
+
+    pub async fn connect_other(&mut self, other: &mut Self) -> bool {
+        match (self.connected, other.connected) {
+            (true, false) => {
+                if let Some(conn) = self.get_connection_self().await {
+                    other.set_connection_self(conn).await.is_some()
+                }else{
+                    false
+                }
+            }
+            (false, true) => {
+                if let Some(conn) = other.get_connection_self().await {
+                    self.set_connection_self(conn).await.is_some()
+                }else{
+                    false
+                }
+            }
+            (false, false) => {
+                let conn = barrage::unbounded();
+                self.set_connection_self(conn.clone()).await.is_some() && other.set_connection_self(conn).await.is_some()
+            }
+            (true, true) => {
+                false
+            }
+        }
+    }
+
+    pub async fn disconnect(&mut self) -> bool {
         if self.connected {
             if self.disconnect.0.send_async(()).await.is_err() {
                 return false;
             }
-            self.disconnect.1.recv_async().await.is_ok()
+            let res = self.disconnect.1.recv_async().await.is_ok();
+            self.connected = false;
+            res
         } else {
             false
         }
+    }
+}
+
+impl Display for NicHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "state: {}", if self.connected {"UP"} else {"DOWN"})
     }
 }
 
@@ -171,22 +228,29 @@ impl Chassis {
             let (mut conn, addr) = nic.split();
             let dconn_rx = Arc::new(dconn_rx);
             let uplink_rx = Arc::new(up_link.rx);
+            let conn_rx = Arc::new(conn_rx);
             'state_change: loop {
                 if let Some((tx, rx)) = conn.take() {
+                    let rx = Arc::new(rx);
                     let mut join_set = JoinSet::new();
                     // let nic_ref = &nic;
-                    join_set.spawn(async move { ThreeWayEither::A((rx.recv_async().await, rx)) });
+                    let rx_clone = rx.clone();
+                    join_set.spawn(async move { ThreeWayEither::A(rx_clone.recv_async().await) });
                     let uplink_rx_clone = uplink_rx.clone();
                     join_set.spawn(async move {
                         ThreeWayEither::B(uplink_rx_clone.recv_async().await)
                     });
                     let dconn_rx_clone = dconn_rx.clone();
                     join_set.spawn(async move {
-                        ThreeWayEither::C(dconn_rx_clone.recv_async().await)
+                        ThreeWayEither::C(Either::Right(dconn_rx_clone.recv_async().await))
+                    });
+                    let conn_rx_clone = conn_rx.clone();
+                    join_set.spawn(async move {
+                        ThreeWayEither::C(Either::Left(conn_rx_clone.recv_async().await))
                     });
                     loop {
                         match join_set.join_next().await {
-                            Some(Ok(ThreeWayEither::A((eth_packet, rx)))) => {
+                            Some(Ok(ThreeWayEither::A(eth_packet))) => {
                                 match eth_packet {
                                     Err(_) => warn!(NIC = ?addr, "Error recieving eth packet: Disconnected"),
                                     Ok(eth_packet) => {
@@ -217,8 +281,8 @@ impl Chassis {
                                         }
                                     }
                                 }
-                                join_set
-                                    .spawn(async move { ThreeWayEither::A((rx.recv_async().await, rx)) });
+                                let rx_clone = rx.clone();
+                                join_set.spawn(async move { ThreeWayEither::A(rx_clone.recv_async().await) });
                             }
                             Some(Ok(ThreeWayEither::B(up_link_msg))) => {
                                 match up_link_msg {
@@ -266,7 +330,7 @@ impl Chassis {
                                     ThreeWayEither::B(uplink_rx_clone.recv_async().await)
                                 });
                             }
-                            Some(Ok(ThreeWayEither::C(msg))) => {
+                            Some(Ok(ThreeWayEither::C(Either::Right(msg)))) => {
                                 match msg {
                                     Ok(()) => {
                                         dconn_reply_tx.send_async(()).await.unwrap();
@@ -275,18 +339,23 @@ impl Chassis {
                                     Err(e) => warn!(NIC = ?addr, "Disconnect packet error: {e:?}"),
                                 }
                             }
+                            Some(Ok(ThreeWayEither::C(Either::Left(msg)))) => {
+                                match msg {
+                                    Ok(()) => {
+                                        conn_reply_tx.send_async((tx, rx.as_ref().clone())).await.unwrap();
+                                        continue 'state_change
+                                    },
+                                    Err(e) => warn!(NIC = ?addr, "Connect packet error: {e:?}"),
+                                }
+                            }
                             Some(Err(e)) => warn!(NIC = ?addr, "join error: {e:?}"),
                             None => (),
                         }
                         tokio::task::yield_now().await
                     }
-                }else if conn_rx.recv_async().await == Ok(()) {
-                    let conn_b = conn.clone().unwrap_or_else(|| {
-                        let conn_b = barrage::unbounded();
-                        conn = Some(conn_b.clone());
-                        conn_b
-                    });
-                    conn_reply_tx.send_async(conn_b).await.unwrap();
+                }else if let Ok(conn_b) = conn_net_rx.recv_async().await {
+                    conn = Some(conn_b);
+                    conn_net_reply_tx.send_async(()).await.unwrap();
                     continue 'state_change;
                 }
                 break
