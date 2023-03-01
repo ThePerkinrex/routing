@@ -481,7 +481,10 @@ impl Chassis {
                                     .await
                             }
                         },
-                        None | Some(Err(_)) => warn!("Join set emptied"),
+                        None | Some(Err(_)) => {
+                            warn!("Join set emptied");
+                            break;
+                        }
                     }
                 }
             });

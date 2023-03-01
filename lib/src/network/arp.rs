@@ -290,11 +290,11 @@ impl
                         if let Some((_, table)) = self.ipv4.as_mut() {
                             if let Some((addr, _time)) = table.get(&(ip, id)) {
                                 // TODO, is it old?
-                                trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
+                                // trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
                                 let _ = ipv4_handle.1.send_async(*addr).await;
                             } else {
                                 trace!("ARP: Searching for MAC address for IPv4 {ip}");
-                                for (id, sender) in down_sender {
+                                if let Some((id, sender)) = down_sender.get_key_value(&id) {
                                     match id {
                                         LinkLayerId::Ethernet(_, sha) => {
                                             let packet = ArpPacket::new_request(
@@ -312,12 +312,15 @@ impl
                                                     .to_vec(),
                                                 ip.as_slice().to_vec(),
                                             );
-                                            let _ = sender
+                                            if let Err(e) = sender
                                                 .send_async(ProcessMessage::Message(
                                                     NetworkLayerId::Arp,
                                                     (mac::BROADCAST, packet.to_vec()),
                                                 ))
-                                                .await;
+                                                .await
+                                            {
+                                                warn!("ARP: Error sending ARP request package: {e}")
+                                            }
                                         }
                                     }
                                 }

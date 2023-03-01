@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Write, ops::DerefMut};
+use std::{collections::HashMap, io::Write, ops::DerefMut, path::PathBuf};
 
 use clap::Parser;
 use tokio::{sync::RwLock, time::error::Elapsed};
@@ -18,6 +18,8 @@ use routing::{
     transport::icmp::IcmpProcess,
 };
 
+mod ping;
+
 #[derive(Debug, clap::Parser)]
 #[command(name = ">")]
 enum GeneralCommands {
@@ -25,6 +27,7 @@ enum GeneralCommands {
     New { name: String },
     List,
     Use { name: String },
+    Source { path: PathBuf },
 }
 
 #[derive(Debug, clap::Parser)]
@@ -37,9 +40,7 @@ enum ChassisCommands {
     IpV4(IpChassisCommands),
     #[command(subcommand)]
     Arp(ArpCmd),
-    Ping {
-        ip: IpV4Addr,
-    },
+    Ping(ping::Ping),
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -106,19 +107,32 @@ async fn start() {
     let stdin = std::io::stdin(); // We get `Stdin` here.
     let mut current_chassis = None;
     let mut chassis = HashMap::new();
+    let mut lines = Vec::new();
     loop {
         buffer.clear();
+        if let Some(line) = lines.pop() {
+            info!("{line}");
+            buffer = line;
+        }
         match current_chassis.as_ref() {
             None => {
-                print!(" > ");
-                std::io::stdout().flush().unwrap();
-                stdin.read_line(&mut buffer).unwrap();
+                if buffer.is_empty() {
+                    print!(" > ");
+                    std::io::stdout().flush().unwrap();
+                    stdin.read_line(&mut buffer).unwrap();
+                }
                 match GeneralCommands::try_parse_from(
                     std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim())),
                 ) {
                     Ok(GeneralCommands::Stop) => {
                         info!("stopping");
                         break;
+                    }
+                    Ok(GeneralCommands::Source { path }) => {
+                        if let Ok(s) = std::fs::read_to_string(path) {
+                            lines
+                                .extend(s.lines().rev().map(|s| s.trim()).map(ToString::to_string));
+                        }
                     }
                     #[allow(clippy::map_entry)]
                     Ok(GeneralCommands::New { name }) => {
@@ -170,12 +184,14 @@ async fn start() {
                 }
             }
             Some(name) => {
-                print!("({name}) > ");
                 let mut guard = chassis.get(name).unwrap().write().await;
                 let (chassis_struct, ipv4_config, link_level_handles, arphandle, icmp_api) =
                     guard.deref_mut();
-                std::io::stdout().flush().unwrap();
-                stdin.read_line(&mut buffer).unwrap();
+                if buffer.is_empty() {
+                    print!("({name}) > ");
+                    std::io::stdout().flush().unwrap();
+                    stdin.read_line(&mut buffer).unwrap();
+                }
                 match ChassisCommands::try_parse_from(
                     std::iter::once(">").chain(arguments::ArgumentsIter::new(buffer.trim())),
                 ) {
@@ -183,26 +199,7 @@ async fn start() {
                         info!("Exiting chassis `{name}`");
                         current_chassis = None
                     }
-                    Ok(ChassisCommands::Ping { ip }) => {
-                        let start = std::time::Instant::now();
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(1),
-                            icmp_api.echo_ip_v4(0, 0, ip),
-                        )
-                        .await
-                        {
-                            Ok(Some(())) => {
-                                let dur = std::time::Instant::now() - start;
-                                info!("Pong from {ip} in {dur:?}")
-                            }
-                            Ok(None) => {
-                                warn!("Error sending or receiving packet");
-                            }
-                            Err(_) => {
-                                warn!("Timeout!");
-                            }
-                        }
-                    }
+                    Ok(ChassisCommands::Ping(args)) => ping::ping(args, icmp_api).await,
                     Ok(ChassisCommands::Arp(cmd)) => match cmd {
                         ArpCmd::IpV4List => {
                             if let Some(data) = arphandle.get_ipv4_table().await {

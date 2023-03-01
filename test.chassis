@@ -1,0 +1,10 @@
+new a
+link add eth 0 00-01-00-00-00-00
+ip-v4 set 192.168.1.2
+ip-v4 route add 192.168.1.3 32 192.168.1.3 eth 0
+exit
+new b
+link add eth 0 00-01-00-00-00-01
+ip-v4 set 192.168.1.3
+ip-v4 route add 192.168.1.2 32 192.168.1.2 eth 0
+link connect eth 0 a 0

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use either::Either;
 use flume::{Receiver, RecvError, Sender};
 use tokio::task::JoinSet;
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{
     chassis::{
@@ -19,21 +19,41 @@ pub mod packet;
 
 type Duplex<Tx, Rx> = (Sender<Tx>, Arc<Receiver<Rx>>);
 
+#[derive(Debug, Clone)]
 pub struct IcmpApi {
-    echo_ip_v4: Duplex<(u16, u16, IpV4Addr), Receiver<()>>,
+    echo_ip_v4: Duplex<(u16, u16, IpV4Addr), Receiver<(u16, u16, IpV4Addr)>>,
 }
 
 impl IcmpApi {
-    pub async fn echo_ip_v4(&self, id: u16, seq: u16, ip: IpV4Addr) -> Option<()> {
-        self.echo_ip_v4.0.send_async((id, seq, ip)).await.ok()?;
-        let rx = self.echo_ip_v4.1.recv_async().await.ok()?;
-        rx.recv_async().await.ok()
+    pub async fn echo_ip_v4(
+        &self,
+        id: u16,
+        seq: u16,
+        ip: IpV4Addr,
+    ) -> Option<(u16, u16, IpV4Addr)> {
+        self.echo_ip_v4
+            .0
+            .send_async((id, seq, ip))
+            .await
+            .map_err(|e| warn!("Echo send err: {e}"))
+            .ok()?;
+        let rx = self
+            .echo_ip_v4
+            .1
+            .recv_async()
+            .await
+            .map_err(|e| warn!("Echo recv reciever err: {e}"))
+            .ok()?;
+        rx.recv_async()
+            .await
+            .map_err(|e| warn!("Echo recv err: {e}"))
+            .ok()
     }
 }
 
 pub struct IcmpProcess {
-    echo_ip_v4: Duplex<Receiver<()>, (u16, u16, IpV4Addr)>,
-    echo_data_ip_v4: HashMap<(u16, u16, IpV4Addr), Sender<()>>,
+    echo_ip_v4: Duplex<Receiver<(u16, u16, IpV4Addr)>, (u16, u16, IpV4Addr)>,
+    echo_data_ip_v4: HashMap<(u16, u16, IpV4Addr), Sender<(u16, u16, IpV4Addr)>>,
 }
 
 impl IcmpProcess {
@@ -86,7 +106,7 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
                         }
                         IcmpPacket::EchoReply { id, seq } => {
                             if let Some(tx) = self.echo_data_ip_v4.remove(&(id, seq, addr)) {
-                                let _ = tx.send_async(()).await;
+                                let _ = tx.send_async((id, seq, addr)).await;
                             }
                         }
                     }
@@ -131,12 +151,10 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
             ExtraMessage::EchoIpV4(msg) => match msg {
                 Ok(msg) => {
                     let (tx, rx) = flume::bounded(1);
+                    trace!(msg = ?msg, "Adding echo sender");
                     self.echo_data_ip_v4.insert(msg, tx);
                     let _ = self.echo_ip_v4.0.send_async(rx).await;
-                    let rx = self.echo_ip_v4.1.clone();
-                    join_set.spawn(async move {
-                        Either::Right(ExtraMessage::EchoIpV4(rx.recv_async().await))
-                    });
+
                     if let Some(sender) = down_sender.get(&NetworkLayerId::Ipv4) {
                         let (id, seq, addr) = msg;
                         let _ = sender
@@ -153,5 +171,7 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
                 Err(RecvError::Disconnected) => warn!("Handler echo ip v4 disconnected"),
             },
         }
+        let rx = self.echo_ip_v4.1.clone();
+        join_set.spawn(async move { Either::Right(ExtraMessage::EchoIpV4(rx.recv_async().await)) });
     }
 }
