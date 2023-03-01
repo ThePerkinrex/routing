@@ -25,11 +25,11 @@ pub mod protocol;
 
 pub struct IpV4Process {
     config: IpV4Config,
-    arp: ArpHandle<IpV4Addr, (Mac, LinkLayerId)>,
+    arp: ArpHandle<(IpV4Addr, LinkLayerId), Mac>,
 }
 
 impl IpV4Process {
-    pub fn new(config: IpV4Config, arp: ArpHandle<IpV4Addr, (Mac, LinkLayerId)>) -> Self {
+    pub fn new(config: IpV4Config, arp: ArpHandle<(IpV4Addr, LinkLayerId), Mac>) -> Self {
         Self { config, arp }
     }
 }
@@ -87,16 +87,16 @@ impl
                 }
             } else if ip_packet.header.time_to_live > 0 {
                 ip_packet.header.time_to_live -= 1;
-                if let Some(next_hop) = self
+                if let Some((next_hop, iface)) = self
                     .config
                     .read()
                     .await
                     .routing
                     .get_route(ip_packet.header.destination)
                 {
-                    if let Some(Ok((dest_mac, iface))) = self
+                    if let Some(Ok(dest_mac)) = self
                         .arp
-                        .get_haddr_timeout(next_hop, std::time::Duration::from_secs(1))
+                        .get_haddr_timeout((next_hop, iface), std::time::Duration::from_secs(1))
                         .await
                     {
                         trace!(IP = ?ip, "Sending IPv4 packet to interface: {iface} next_hop {next_hop} ({dest_mac})");
@@ -141,10 +141,10 @@ impl
             };
             let ip = self.config.read().await.addr;
             trace!(IP = ?ip, msg = ?msg, "Recieved packet from {up_id:?} towards {target_ip}");
-            if let Some(next_hop) = self.config.read().await.routing.get_route(target_ip) {
-                if let Some(Ok((dest_mac, iface))) = self
+            if let Some((next_hop, iface)) = self.config.read().await.routing.get_route(target_ip) {
+                if let Some(Ok(dest_mac)) = self
                     .arp
-                    .get_haddr_timeout(next_hop, std::time::Duration::from_secs(1))
+                    .get_haddr_timeout((next_hop, iface), std::time::Duration::from_secs(1))
                     .await
                 {
                     trace!(IP = ?ip, "Sending IPv4 packet to interface: {iface} next_hop {next_hop} ({dest_mac})");

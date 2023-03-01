@@ -70,6 +70,11 @@ type LinkLayerProcessHandle = (
     Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
 );
 
+type TransportLayerProcessHandle = (
+    JoinHandle<()>,
+    Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportMessage>>,
+);
+
 type MidLayerProcessHandle<DownId, Id, UpId, DownPayload, UpPayload> = (
     JoinHandle<()>,
     Sender<ProcessMessage<DownId, Id, DownPayload>>,
@@ -204,6 +209,7 @@ pub struct Chassis {
             NetworkTransportPayload,
         >,
     >,
+    transport_layer_processes: HashMap<TransportLayerId, TransportLayerProcessHandle>,
 }
 
 impl Chassis {
@@ -415,6 +421,72 @@ impl Chassis {
             HashMap::new(),
             build_mid_level_handler(process),
         )
+    }
+
+    pub fn add_transport_layer_process<
+        P: TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportPayload>
+            + Send
+            + 'static,
+    >(
+        &mut self,
+        id: TransportLayerId,
+        mut process: P,
+    ) {
+        let (tx_down, rx_down) = flume::unbounded();
+        self.transport_layer_processes.entry(id).or_insert_with(|| {
+            let mut down_map = self
+                .network_layer_processes
+                .iter()
+                .map(|(k, (_, _, v))| (*k, v.clone()))
+                .collect::<HashMap<_, _>>();
+            for sender in down_map.values() {
+                let _ = sender.send(ProcessMessage::NewConn(id, tx_down.clone()));
+            }
+
+            let handle = tokio::spawn(async move {
+                let mut join_set = JoinSet::new();
+                let down_rx = Arc::new(rx_down);
+                {
+                    let down_rx = down_rx.clone();
+                    join_set.spawn(async move { Either::Left(down_rx.recv_async().await) })
+                };
+                process.setup(&mut join_set).await;
+                loop {
+                    match join_set.join_next().await {
+                        Some(Ok(msg)) => match msg {
+                            Either::Left(msg) => match msg {
+                                Ok(msg) => {
+                                    match msg {
+                                        ProcessMessage::NewConn(id, sender) => {
+                                            down_map.insert(id, sender);
+                                        }
+                                        ProcessMessage::Message(id, payload) => {
+                                            process.on_down_message(payload, id, &down_map).await
+                                        }
+                                    };
+                                    {
+                                        let down_rx = down_rx.clone();
+                                        join_set.spawn(async move {
+                                            Either::Left(down_rx.recv_async().await)
+                                        })
+                                    };
+                                }
+                                Err(RecvError::Disconnected) => {
+                                    warn!("TRANSPORT: Down link disconnected")
+                                }
+                            },
+                            Either::Right(extra) => {
+                                process
+                                    .on_extra_message(extra, &down_map, &mut join_set)
+                                    .await
+                            }
+                        },
+                        None | Some(Err(_)) => warn!("Join set emptied"),
+                    }
+                }
+            });
+            (handle, tx_down)
+        });
     }
 }
 
@@ -673,7 +745,7 @@ pub trait TransportLevelProcess<Id, DownId, DownPayload> {
     async fn setup(
         &mut self,
         join_set: &mut JoinSet<
-            Either<ReceptionResult<ProcessMessage<DownId, Id, DownPayload>>, Self::Extra>,
+            Either<Result<ProcessMessage<DownId, Id, DownPayload>, RecvError>, Self::Extra>,
         >,
     ) {
     }
@@ -683,7 +755,7 @@ pub trait TransportLevelProcess<Id, DownId, DownPayload> {
         msg: Self::Extra,
         down_sender: &HashMap<DownId, Sender<ProcessMessage<Id, DownId, DownPayload>>>,
         join_set: &mut JoinSet<
-            Either<ReceptionResult<ProcessMessage<DownId, Id, DownPayload>>, Self::Extra>,
+            Either<Result<ProcessMessage<DownId, Id, DownPayload>, RecvError>, Self::Extra>,
         >,
     ) {
     }

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::Write, ops::DerefMut};
 
 use clap::Parser;
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, time::error::Elapsed};
 use tracing::{error, info, warn};
 
 use routing::{
@@ -15,6 +15,7 @@ use routing::{
         IpV4Process,
     },
     route::RoutingEntry,
+    transport::icmp::IcmpProcess,
 };
 
 #[derive(Debug, clap::Parser)]
@@ -36,6 +37,9 @@ enum ChassisCommands {
     IpV4(IpChassisCommands),
     #[command(subcommand)]
     Arp(ArpCmd),
+    Ping {
+        ip: IpV4Addr,
+    },
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -55,6 +59,8 @@ enum RouteCmd {
         destination: IpV4Addr,
         mask: u8,
         next_hop: IpV4Addr,
+        iface_type: LinkType,
+        iface_id: u16,
     },
     Get {
         destination: IpV4Addr,
@@ -132,6 +138,8 @@ async fn start() {
                                 arphandle.get_new_ipv4_handle().await.unwrap(),
                             );
                             c.add_network_layer_process(chassis::NetworkLayerId::Ipv4, ip);
+                            let (icmp, icmp_api) = IcmpProcess::new();
+                            c.add_transport_layer_process(chassis::TransportLayerId::Icmp, icmp);
                             chassis.insert(
                                 name,
                                 RwLock::new((
@@ -139,6 +147,7 @@ async fn start() {
                                     conf,
                                     HashMap::<LinkLayerId, NicHandle>::default(),
                                     arphandle,
+                                    icmp_api,
                                 )),
                             );
                         }
@@ -163,7 +172,7 @@ async fn start() {
             Some(name) => {
                 print!("({name}) > ");
                 let mut guard = chassis.get(name).unwrap().write().await;
-                let (chassis_struct, ipv4_config, link_level_handles, arphandle) =
+                let (chassis_struct, ipv4_config, link_level_handles, arphandle, icmp_api) =
                     guard.deref_mut();
                 std::io::stdout().flush().unwrap();
                 stdin.read_line(&mut buffer).unwrap();
@@ -174,19 +183,39 @@ async fn start() {
                         info!("Exiting chassis `{name}`");
                         current_chassis = None
                     }
+                    Ok(ChassisCommands::Ping { ip }) => {
+                        let start = std::time::Instant::now();
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(1),
+                            icmp_api.echo_ip_v4(0, 0, ip),
+                        )
+                        .await
+                        {
+                            Ok(Some(())) => {
+                                let dur = std::time::Instant::now() - start;
+                                info!("Pong from {ip} in {dur:?}")
+                            }
+                            Ok(None) => {
+                                warn!("Error sending or receiving packet");
+                            }
+                            Err(_) => {
+                                warn!("Timeout!");
+                            }
+                        }
+                    }
                     Ok(ChassisCommands::Arp(cmd)) => match cmd {
                         ArpCmd::IpV4List => {
                             if let Some(data) = arphandle.get_ipv4_table().await {
                                 let mut table =
-                                    prettytable::table!(["IPv4", "MAC", "iface", "query time"]);
+                                    prettytable::table!(["IPv4", "interface", "MAC", "query time"]);
                                 if data.is_empty() {
                                     table.add_empty_row();
                                 }
-                                for (ip, (mac, iface, t)) in data.into_iter() {
+                                for ((ip, iface), (mac, t)) in data.into_iter() {
                                     table.add_row(prettytable::row![
                                         ip,
-                                        mac,
                                         iface,
+                                        mac,
                                         t.format("%d/%m/%Y %H:%M:%S%.f")
                                     ]);
                                 }
@@ -253,6 +282,8 @@ async fn start() {
                                 destination,
                                 mask,
                                 next_hop,
+                                iface_type,
+                                iface_id,
                             } => {
                                 ipv4_config
                                     .write()
@@ -262,6 +293,11 @@ async fn start() {
                                         destination,
                                         next_hop,
                                         IpV4Mask::new(mask),
+                                        match iface_type {
+                                            LinkType::Eth => {
+                                                LinkLayerId::Ethernet(iface_id, mac::BROADCAST)
+                                            }
+                                        },
                                     ));
                             }
                             RouteCmd::Get { destination } => ipv4_config
@@ -273,8 +309,8 @@ async fn start() {
                                     || {
                                         warn!("Route to {destination} not found");
                                     },
-                                    |route| {
-                                        info!("Route to {destination} through {route}");
+                                    |(route, iface)| {
+                                        info!("Route to {destination} through {route} ({iface})");
                                     },
                                 ),
                         },

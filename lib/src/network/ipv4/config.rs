@@ -9,7 +9,7 @@ use super::addr::{IpV4Addr, IpV4Mask, DEFAULT};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpV4ConfigInner {
     pub addr: IpV4Addr,
-    pub routing: RoutingTable<IpV4Addr, IpV4Mask>,
+    pub routing: RoutingTable<IpV4Addr, IpV4Mask, LinkLayerId>,
     pub dhcp_run: bool,
 }
 
