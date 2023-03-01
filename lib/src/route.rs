@@ -67,6 +67,7 @@ impl<Addr, Mask> RoutingTable<Addr, Mask> {
     {
         self.data
             .iter()
+            .rev()
             .find(
                 |RoutingEntry {
                      destination: dest,

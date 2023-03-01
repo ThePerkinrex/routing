@@ -1,4 +1,4 @@
-use crate::ethernet::ethertype::EtherType;
+use crate::link::ethernet::ethertype::EtherType;
 
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

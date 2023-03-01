@@ -9,9 +9,9 @@ use tracing::{trace, warn};
 
 use crate::{
     either::ThreeWayEither,
-    ethernet::{ethertype::EtherType, nic::Nic, packet::EthernetPacket},
-    ipv4::addr::IpV4Addr,
+    link::ethernet::{ethertype::EtherType, nic::Nic, packet::EthernetPacket},
     mac::Mac,
+    network::ipv4::addr::IpV4Addr,
 };
 
 #[derive(Debug, Clone, Copy, Eq, Derivative)]
@@ -660,4 +660,31 @@ pub type LinkProcessUpLink = ChassisInProcessLink<
 pub struct ChassisInProcessLink<LinkedId, RecvMsg, SendMsg> {
     pub rx: Receiver<RecvMsg>,
     pub tx: HashMap<LinkedId, Sender<SendMsg>>,
+}
+
+#[async_trait]
+pub trait TransportLevelProcess<Id, DownId, DownPayload> {
+    async fn on_down_message(
+        &mut self,
+        msg: DownPayload,
+        down_id: DownId,
+        down_sender: &HashMap<DownId, Sender<ProcessMessage<Id, DownId, DownPayload>>>,
+    );
+    async fn setup(
+        &mut self,
+        join_set: &mut JoinSet<
+            Either<ReceptionResult<ProcessMessage<DownId, Id, DownPayload>>, Self::Extra>,
+        >,
+    ) {
+    }
+    type Extra: Send;
+    async fn on_extra_message(
+        &mut self,
+        msg: Self::Extra,
+        down_sender: &HashMap<DownId, Sender<ProcessMessage<Id, DownId, DownPayload>>>,
+        join_set: &mut JoinSet<
+            Either<ReceptionResult<ProcessMessage<DownId, Id, DownPayload>>, Self::Extra>,
+        >,
+    ) {
+    }
 }

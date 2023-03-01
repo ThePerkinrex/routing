@@ -4,19 +4,19 @@ use flume::Sender;
 use tracing::{debug, trace, warn};
 
 use crate::{
-    arp::ArpHandle,
     chassis::{
         LinkLayerId, LinkNetworkPayload, MidLevelProcess, NetworkLayerId, NetworkTransportMessage,
         NetworkTransportPayload, ProcessMessage, TransportLayerId,
     },
-    ipv4::{
-        self,
-        packet::{IpV4Header, Ipv4Packet},
-    },
     mac::{self, Mac},
+    network::arp::ArpHandle,
 };
 
-use self::{addr::IpV4Addr, config::IpV4Config};
+use self::{
+    addr::IpV4Addr,
+    config::IpV4Config,
+    packet::{IpV4Header, Ipv4Packet},
+};
 
 pub mod addr;
 pub mod config;

@@ -5,16 +5,15 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use routing::{
-    arp::ArpProcess,
-    chassis::{self, Chassis, LinkLayerId, NicHandle, ProcessMessage, TransportLayerId},
-    ethernet::nic::Nic,
-    ipv4::{
-        self,
+    chassis::{self, Chassis, LinkLayerId, NicHandle},
+    link::ethernet::nic::Nic,
+    mac::{self, Mac},
+    network::arp::ArpProcess,
+    network::ipv4::{
         addr::{IpV4Addr, IpV4Mask},
         config::IpV4Config,
         IpV4Process,
     },
-    mac::{self, Mac},
     route::RoutingEntry,
 };
 
@@ -56,6 +55,9 @@ enum RouteCmd {
         destination: IpV4Addr,
         mask: u8,
         next_hop: IpV4Addr,
+    },
+    Get {
+        destination: IpV4Addr,
     },
 }
 
@@ -251,7 +253,30 @@ async fn start() {
                                 destination,
                                 mask,
                                 next_hop,
-                            } => todo!(),
+                            } => {
+                                ipv4_config
+                                    .write()
+                                    .await
+                                    .routing
+                                    .add_route(RoutingEntry::new(
+                                        destination,
+                                        next_hop,
+                                        IpV4Mask::new(mask),
+                                    ));
+                            }
+                            RouteCmd::Get { destination } => ipv4_config
+                                .read()
+                                .await
+                                .routing
+                                .get_route(destination)
+                                .map_or_else(
+                                    || {
+                                        warn!("Route to {destination} not found");
+                                    },
+                                    |route| {
+                                        info!("Route to {destination} through {route}");
+                                    },
+                                ),
                         },
                         IpChassisCommands::Set { addr } => {
                             info!("Setting chassis' {name} IPv4 addr to {addr}");

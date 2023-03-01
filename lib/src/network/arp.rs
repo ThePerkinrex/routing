@@ -6,17 +6,17 @@ use tracing::{trace, warn};
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use super::ipv4::{addr::IpV4Addr, config::IpV4Config};
 use crate::{
-    arp::packet::{ArpPacket, Operation},
     chassis::{
         LinkLayerId, LinkNetworkPayload, MidLevelProcess, NetworkLayerId, NetworkTransportPayload,
         ProcessMessage, ReceptionResult, TransportLayerId,
     },
     either::ThreeWayEither,
-    ethernet::ethertype::EtherType,
-    ipv4::{addr::IpV4Addr, config::IpV4Config},
+    link::ethernet::ethertype::EtherType,
     mac::{self, Mac},
 };
+use packet::{ArpPacket, Operation};
 
 pub mod packet;
 
