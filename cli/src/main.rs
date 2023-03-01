@@ -35,6 +35,8 @@ enum ChassisCommands {
     Link(LinkCmd),
     #[command(subcommand)]
     IpV4(IpChassisCommands),
+    #[command(subcommand)]
+    Arp(ArpCmd),
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -55,6 +57,11 @@ enum RouteCmd {
         mask: u8,
         next_hop: IpV4Addr,
     },
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum ArpCmd {
+    IpV4List,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -114,12 +121,22 @@ async fn start() {
                         } else {
                             info!("Created new chassis with name: {name}");
                             current_chassis = Some(name.clone());
+                            let conf = IpV4Config::default();
+                            let mut c = Chassis::new();
+                            let (arp, arphandle) = ArpProcess::new(Some(conf.clone()), None);
+                            c.add_network_layer_process(chassis::NetworkLayerId::Arp, arp);
+                            let ip = IpV4Process::new(
+                                conf.clone(),
+                                arphandle.get_new_ipv4_handle().await.unwrap(),
+                            );
+                            c.add_network_layer_process(chassis::NetworkLayerId::Ipv4, ip);
                             chassis.insert(
                                 name,
                                 RwLock::new((
-                                    Chassis::new(),
-                                    IpV4Config::default(),
+                                    c,
+                                    conf,
                                     HashMap::<LinkLayerId, NicHandle>::default(),
+                                    arphandle,
                                 )),
                             );
                         }
@@ -144,7 +161,8 @@ async fn start() {
             Some(name) => {
                 print!("({name}) > ");
                 let mut guard = chassis.get(name).unwrap().write().await;
-                let (chassis_struct, ipv4_config, link_level_handles) = guard.deref_mut();
+                let (chassis_struct, ipv4_config, link_level_handles, arphandle) =
+                    guard.deref_mut();
                 std::io::stdout().flush().unwrap();
                 stdin.read_line(&mut buffer).unwrap();
                 match ChassisCommands::try_parse_from(
@@ -154,6 +172,26 @@ async fn start() {
                         info!("Exiting chassis `{name}`");
                         current_chassis = None
                     }
+                    Ok(ChassisCommands::Arp(cmd)) => match cmd {
+                        ArpCmd::IpV4List => {
+                            if let Some(data) = arphandle.get_ipv4_table().await {
+                                let mut table =
+                                    prettytable::table!(["IPv4", "MAC", "iface", "query time"]);
+                                if data.is_empty() {
+                                    table.add_empty_row();
+                                }
+                                for (ip, (mac, iface, t)) in data.into_iter() {
+                                    table.add_row(prettytable::row![
+                                        ip,
+                                        mac,
+                                        iface,
+                                        t.format("%d/%m/%Y %H:%M:%S%.f")
+                                    ]);
+                                }
+                                info!("ARP IPv4 list:\n{table}");
+                            }
+                        }
+                    },
                     Ok(ChassisCommands::Link(cmd)) => match cmd {
                         LinkCmd::List => {
                             info!("Chassis {name} interfaces:");
@@ -201,29 +239,32 @@ async fn start() {
                             }
                         }
                     },
-                    Ok(ChassisCommands::IpV4(IpChassisCommands::Route(cmd))) => match cmd {
-                        RouteCmd::List => {
-                            info!(
-                                "Chassis {name} IPv4 routes:\n{}",
-                                ipv4_config.read().await.routing.print()
-                            )
+                    Ok(ChassisCommands::IpV4(cmd)) => match cmd {
+                        IpChassisCommands::Route(cmd) => match cmd {
+                            RouteCmd::List => {
+                                info!(
+                                    "Chassis {name} IPv4 routes:\n{}",
+                                    ipv4_config.read().await.routing.print()
+                                )
+                            }
+                            RouteCmd::Add {
+                                destination,
+                                mask,
+                                next_hop,
+                            } => todo!(),
+                        },
+                        IpChassisCommands::Set { addr } => {
+                            info!("Setting chassis' {name} IPv4 addr to {addr}");
+                            ipv4_config.write().await.addr = addr;
                         }
-                        RouteCmd::Add {
-                            destination,
-                            mask,
-                            next_hop,
-                        } => todo!(),
+                        IpChassisCommands::Get => {
+                            info!(
+                                "Chassis {name} IPv4 addr is {}",
+                                ipv4_config.read().await.addr
+                            );
+                        }
                     },
-                    Ok(ChassisCommands::IpV4(IpChassisCommands::Set { addr })) => {
-                        info!("Setting chassis' {name} IPv4 addr to {addr}");
-                        ipv4_config.write().await.addr = addr;
-                    }
-                    Ok(ChassisCommands::IpV4(IpChassisCommands::Get)) => {
-                        info!(
-                            "Chassis {name} IPv4 addr is {}",
-                            ipv4_config.read().await.addr
-                        );
-                    }
+
                     Err(e) => error!("{e}"),
                 }
             }

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local};
 use either::Either;
 use flume::{Receiver, RecvError, Sender};
 use tokio::task::JoinSet;
@@ -23,12 +24,22 @@ type IpV6Addr = IpV4Addr;
 
 #[derive(Debug)]
 pub struct ArpProcess {
-    ipv4: Option<(IpV4Config, HashMap<IpV4Addr, (Mac, LinkLayerId)>)>,
+    ipv4: Option<(
+        IpV4Config,
+        HashMap<IpV4Addr, (Mac, LinkLayerId, DateTime<Local>)>,
+    )>,
     ipv4_handle: Option<(Arc<Receiver<IpV4Addr>>, Sender<(Mac, LinkLayerId)>)>,
-    ipv6: Option<(IpV6Addr, HashMap<IpV6Addr, (Mac, LinkLayerId)>)>,
+    ipv6: Option<(
+        IpV6Addr,
+        HashMap<IpV6Addr, (Mac, LinkLayerId, DateTime<Local>)>,
+    )>,
     get_new_ipv4_handle: (
         Arc<Receiver<()>>,
         Sender<ArpHandle<IpV4Addr, (Mac, LinkLayerId)>>,
+    ),
+    get_ipv4_table: (
+        Arc<Receiver<()>>,
+        Sender<HashMap<IpV4Addr, (Mac, LinkLayerId, DateTime<Local>)>>,
     ),
 }
 
@@ -36,6 +47,8 @@ impl ArpProcess {
     pub fn new(ipv4: Option<IpV4Config>, ipv6: Option<IpV4Addr>) -> (Self, GenericArpHandle) {
         let (new_ipv4_handle_external_tx, new_ipv4_handle_internal_rx) = flume::unbounded();
         let (new_ipv4_handle_internal_tx, new_ipv4_handle_external_rx) = flume::unbounded();
+        let (get_ipv4_table_external_tx, get_ipv4_table_internal_rx) = flume::unbounded();
+        let (get_ipv4_table_internal_tx, get_ipv4_table_external_rx) = flume::unbounded();
         (
             Self {
                 ipv4: ipv4.map(|ip| (ip, HashMap::new())),
@@ -45,9 +58,14 @@ impl ArpProcess {
                     Arc::new(new_ipv4_handle_internal_rx),
                     new_ipv4_handle_internal_tx,
                 ),
+                get_ipv4_table: (
+                    Arc::new(get_ipv4_table_internal_rx),
+                    get_ipv4_table_internal_tx,
+                ),
             },
             GenericArpHandle {
                 get_new_ipv4_handle: (new_ipv4_handle_external_tx, new_ipv4_handle_external_rx),
+                get_ipv4_table: (get_ipv4_table_external_tx, get_ipv4_table_external_rx),
             },
         )
     }
@@ -62,6 +80,7 @@ impl ArpProcess {
 pub enum ExtraMessage {
     GetIpV4(Result<IpV4Addr, RecvError>),
     NewIpV4(Result<(), RecvError>),
+    GetCurrentIPv4Table(Result<(), RecvError>),
 }
 
 #[async_trait::async_trait]
@@ -98,7 +117,7 @@ impl
                         ) {
                             let ip = IpV4Addr::new(spa);
                             let mac = Mac::new(sha);
-                            table.entry(ip).or_insert((mac, down_id));
+                            table.entry(ip).or_insert((mac, down_id, Local::now()));
                             trace!("ARP: Tried to add pair {ip} -> {mac} to the table");
                         }
 
@@ -204,6 +223,10 @@ impl
         join_set.spawn(async move {
             ThreeWayEither::C(ExtraMessage::NewIpV4(new_rx.recv_async().await))
         });
+        let rx = self.get_ipv4_table.0.clone();
+        join_set.spawn(async move {
+            ThreeWayEither::C(ExtraMessage::GetCurrentIPv4Table(rx.recv_async().await))
+        });
         if let Some((rx, _)) = self.ipv4_handle.as_ref() {
             let rx = rx.clone();
             join_set.spawn(async move {
@@ -233,6 +256,18 @@ impl
         >,
     ) {
         match msg {
+            ExtraMessage::GetCurrentIPv4Table(r) => match r {
+                Ok(()) => {
+                    if let Some((_, table)) = &self.ipv4 {
+                        let _ = self.get_ipv4_table.1.send_async(table.clone()).await;
+                    }
+                    let rx = self.get_ipv4_table.0.clone();
+                    join_set.spawn(async move {
+                        ThreeWayEither::C(ExtraMessage::GetCurrentIPv4Table(rx.recv_async().await))
+                    });
+                }
+                Err(RecvError::Disconnected) => warn!("ARP: Disconnected get ipv4 arp table"),
+            },
             ExtraMessage::NewIpV4(r) => {
                 match r {
                     Ok(()) => {
@@ -256,7 +291,8 @@ impl
                 Ok(ip) => {
                     if let Some(ipv4_handle) = &self.ipv4_handle {
                         if let Some((_, table)) = self.ipv4.as_mut() {
-                            if let Some((addr, id)) = table.get(&ip) {
+                            if let Some((addr, id, _time)) = table.get(&ip) {
+                                // TODO, is it old?
                                 trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
                                 let _ = ipv4_handle.1.send_async((*addr, *id)).await;
                             } else {
@@ -350,11 +386,23 @@ pub struct GenericArpHandle {
         Sender<()>,
         Receiver<ArpHandle<IpV4Addr, (Mac, LinkLayerId)>>,
     ),
+
+    get_ipv4_table: (
+        Sender<()>,
+        Receiver<HashMap<IpV4Addr, (Mac, LinkLayerId, DateTime<Local>)>>,
+    ),
 }
 
 impl GenericArpHandle {
     pub async fn get_new_ipv4_handle(&self) -> Option<ArpHandle<IpV4Addr, (Mac, LinkLayerId)>> {
         self.get_new_ipv4_handle.0.send_async(()).await.ok()?;
         self.get_new_ipv4_handle.1.recv_async().await.ok()
+    }
+
+    pub async fn get_ipv4_table(
+        &self,
+    ) -> Option<HashMap<IpV4Addr, (Mac, LinkLayerId, DateTime<Local>)>> {
+        self.get_ipv4_table.0.send_async(()).await.ok()?;
+        self.get_ipv4_table.1.recv_async().await.ok()
     }
 }

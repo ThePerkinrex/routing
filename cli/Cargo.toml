@@ -12,3 +12,5 @@ routing = { path = "../lib"}
 tracing = "0.1.37"
 flume = "0.10.14"
 clap = {version = "4.1.6", features = ["derive"]}
+prettytable = "0.10"
+chrono = "0.4.23"

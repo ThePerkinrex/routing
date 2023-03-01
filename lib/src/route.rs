@@ -91,6 +91,9 @@ where
 {
     pub fn print(&self) -> prettytable::Table {
         let mut table = prettytable::table!(["destination", "mask", "gateway"]);
+        if self.data.is_empty() {
+            table.add_empty_row();
+        }
         for RoutingEntry {
             destination,
             gateway,
