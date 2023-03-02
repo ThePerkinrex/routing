@@ -202,7 +202,7 @@ impl IpV4Header {
         vec
     }
 
-    fn to_vec(&self) -> Vec<u8> {
+    pub fn to_vec(&self) -> Vec<u8> {
         self.to_vec_checksum(self.get_checksum(0))
     }
 }

@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 
 use flume::Sender;
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 use crate::{
     chassis::{
         LinkLayerId, LinkNetworkPayload, MidLevelProcess, NetworkLayerId, NetworkTransportMessage,
         NetworkTransportPayload, ProcessMessage, TransportLayerId,
     },
-    mac::{self, Mac},
+    mac::Mac,
     network::arp::ArpHandle,
+    transport::icmp::packet::IcmpPacket,
 };
 
 use self::{
@@ -31,6 +32,66 @@ pub struct IpV4Process {
 impl IpV4Process {
     pub fn new(config: IpV4Config, arp: ArpHandle<(IpV4Addr, LinkLayerId), Mac>) -> Self {
         Self { config, arp }
+    }
+
+    async fn send_message(
+        &mut self,
+        msg: NetworkTransportPayload,
+        up_id: TransportLayerId,
+        down_sender: &HashMap<
+            LinkLayerId,
+            Sender<ProcessMessage<NetworkLayerId, LinkLayerId, LinkNetworkPayload>>,
+        >,
+    ) {
+        #[allow(irrefutable_let_patterns)]
+        if let NetworkTransportMessage::IPv4(target_ip, ttl, msg) = msg {
+            let ptype = match up_id {
+                TransportLayerId::Tcp => protocol::ProtocolType::TCP,
+                TransportLayerId::Udp => protocol::ProtocolType::UDP,
+                TransportLayerId::Icmp => protocol::ProtocolType::ICMP,
+            };
+            let ip = self.config.read().await.addr;
+            trace!(IP = ?ip, msg = ?msg, "Recieved packet from {up_id:?} towards {target_ip}");
+            if let Some((next_hop, iface)) = self.config.read().await.routing.get_route(target_ip) {
+                if let Some(Ok(dest_mac)) = self
+                    .arp
+                    .get_haddr_timeout((next_hop, iface), std::time::Duration::from_secs(1))
+                    .await
+                {
+                    trace!(IP = ?ip, "Sending IPv4 packet to interface: {iface} next_hop {next_hop} ({dest_mac})");
+                    if let Some(sender) = down_sender.get(&iface) {
+                        sender
+                            .send_async(ProcessMessage::Message(
+                                NetworkLayerId::Ipv4,
+                                (
+                                    dest_mac,
+                                    Ipv4Packet::new(
+                                        IpV4Header::new(
+                                            0,
+                                            packet::Ecn::NotECT,
+                                            msg.len() as u16,
+                                            0,
+                                            packet::Flags::empty(),
+                                            0,
+                                            ttl.unwrap_or(255),
+                                            ptype,
+                                            target_ip,
+                                            ip,
+                                            vec![],
+                                        ),
+                                        msg,
+                                    )
+                                    .to_vec(),
+                                ),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                }
+            } else {
+                warn!(IP = ?ip, "Can't find route to {target_ip}");
+            }
+        }
     }
 }
 
@@ -79,6 +140,7 @@ impl
                                 NetworkLayerId::Ipv4,
                                 NetworkTransportMessage::IPv4(
                                     ip_packet.header.source,
+                                    Some(ip_packet.header.time_to_live),
                                     ip_packet.payload,
                                 ),
                             ))
@@ -113,7 +175,22 @@ impl
                     warn!(IP = ?ip, "Can't find route to {}", ip_packet.header.destination);
                 }
             } else {
-                warn!(IP = ?ip, "Dropped packet");
+                warn!(IP = ?ip, "Dropped packet, sending icmp packet back");
+                let mut data = ip_packet.header.to_vec();
+                data.extend_from_slice(&ip_packet.payload[..(8.min(ip_packet.payload.len()))]);
+                self.send_message(
+                    NetworkTransportMessage::IPv4(
+                        ip_packet.header.source,
+                        None,
+                        IcmpPacket::TimeExceeded(
+                            crate::transport::icmp::packet::TimeExceeded::TtlTransit { data },
+                        )
+                        .to_vec(),
+                    ),
+                    TransportLayerId::Icmp,
+                    down_sender,
+                )
+                .await
             }
         } else {
             warn!(IP = ?ip, "Unable to decode IP packet")
@@ -132,54 +209,6 @@ impl
             Sender<ProcessMessage<NetworkLayerId, TransportLayerId, NetworkTransportPayload>>,
         >,
     ) {
-        #[allow(irrefutable_let_patterns)]
-        if let NetworkTransportMessage::IPv4(target_ip, msg) = msg {
-            let ptype = match up_id {
-                TransportLayerId::Tcp => protocol::ProtocolType::TCP,
-                TransportLayerId::Udp => protocol::ProtocolType::UDP,
-                TransportLayerId::Icmp => protocol::ProtocolType::ICMP,
-            };
-            let ip = self.config.read().await.addr;
-            trace!(IP = ?ip, msg = ?msg, "Recieved packet from {up_id:?} towards {target_ip}");
-            if let Some((next_hop, iface)) = self.config.read().await.routing.get_route(target_ip) {
-                if let Some(Ok(dest_mac)) = self
-                    .arp
-                    .get_haddr_timeout((next_hop, iface), std::time::Duration::from_secs(1))
-                    .await
-                {
-                    trace!(IP = ?ip, "Sending IPv4 packet to interface: {iface} next_hop {next_hop} ({dest_mac})");
-                    if let Some(sender) = down_sender.get(&iface) {
-                        sender
-                            .send_async(ProcessMessage::Message(
-                                NetworkLayerId::Ipv4,
-                                (
-                                    dest_mac,
-                                    Ipv4Packet::new(
-                                        IpV4Header::new(
-                                            0,
-                                            packet::Ecn::NotECT,
-                                            msg.len() as u16,
-                                            0,
-                                            packet::Flags::empty(),
-                                            0,
-                                            255,
-                                            ptype,
-                                            next_hop,
-                                            ip,
-                                            vec![],
-                                        ),
-                                        msg,
-                                    )
-                                    .to_vec(),
-                                ),
-                            ))
-                            .await
-                            .unwrap();
-                    }
-                }
-            } else {
-                warn!(IP = ?ip, "Can't find route to {target_ip}");
-            }
-        }
+        self.send_message(msg, up_id, down_sender).await
     }
 }

@@ -1,7 +1,7 @@
 use tracing::warn;
 
 /// Represents type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IcmpPacket {
     /// 0
     EchoReply { id: u16, seq: u16 },
@@ -15,6 +15,18 @@ pub enum IcmpPacket {
     // RedirectMessage(u8), // TODO
     /// 8
     EchoRequest { id: u16, seq: u16 },
+
+    /// 11
+    TimeExceeded(TimeExceeded),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeExceeded {
+    /// 0 TTL exceeded in transit
+    TtlTransit {
+        // IP header and first 8 bytes
+        data: Vec<u8>,
+    },
 }
 
 impl IcmpPacket {
@@ -34,6 +46,15 @@ impl IcmpPacket {
                 id: u16::from_be_bytes(data[4..6].try_into().ok()?),
                 seq: u16::from_be_bytes(data[6..8].try_into().ok()?),
             }),
+            11 => match code {
+                0 => Some(Self::TimeExceeded(TimeExceeded::TtlTransit {
+                    data: data[4..].to_vec(),
+                })),
+                x => {
+                    warn!("Unknown ICMP time exceeded code: {x}");
+                    None
+                }
+            },
             x => {
                 warn!("Unknown ICMP type: {x}");
                 None
@@ -51,6 +72,9 @@ impl IcmpPacket {
                 let ([a, b], [c, d]) = (id.to_be_bytes(), seq.to_be_bytes());
                 vec![a, b, c, d]
             }),
+            Self::TimeExceeded(t) => match t {
+                TimeExceeded::TtlTransit { data } => (11, 0, data.clone()),
+            },
         };
         let mut res = Vec::with_capacity(4 + extra.len());
         res.push(typ);

@@ -20,8 +20,10 @@ use routing::{
 
 use crate::ctrlc::CtrlC;
 
+mod arguments;
 mod ctrlc;
 mod ping;
+mod traceroute;
 
 #[derive(Debug, clap::Parser)]
 #[command(name = ">")]
@@ -96,8 +98,6 @@ enum LinkCmd {
 enum LinkType {
     Eth,
 }
-
-mod arguments;
 
 #[tokio::main]
 async fn main() {

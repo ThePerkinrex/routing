@@ -7,7 +7,7 @@ use tracing::{trace, warn};
 
 use crate::{
     chassis::{
-        NetworkLayerId, NetworkTransportMessage, ProcessMessage, ReceptionResult, TransportLayerId,
+        NetworkLayerId, NetworkTransportMessage, ProcessMessage, TransportLayerId,
         TransportLevelProcess,
     },
     network::ipv4::addr::IpV4Addr,
@@ -21,7 +21,7 @@ type Duplex<Tx, Rx> = (Sender<Tx>, Arc<Receiver<Rx>>);
 
 #[derive(Debug, Clone)]
 pub struct IcmpApi {
-    echo_ip_v4: Duplex<(u16, u16, IpV4Addr), Receiver<(u16, u16, IpV4Addr)>>,
+    echo_ip_v4: Duplex<(u16, u16, IpV4Addr), Receiver<(u16, u16, IpV4Addr, u8)>>,
 }
 
 impl IcmpApi {
@@ -30,7 +30,7 @@ impl IcmpApi {
         id: u16,
         seq: u16,
         ip: IpV4Addr,
-    ) -> Option<(u16, u16, IpV4Addr)> {
+    ) -> Option<(u16, u16, IpV4Addr, u8)> {
         self.echo_ip_v4
             .0
             .send_async((id, seq, ip))
@@ -52,8 +52,8 @@ impl IcmpApi {
 }
 
 pub struct IcmpProcess {
-    echo_ip_v4: Duplex<Receiver<(u16, u16, IpV4Addr)>, (u16, u16, IpV4Addr)>,
-    echo_data_ip_v4: HashMap<(u16, u16, IpV4Addr), Sender<(u16, u16, IpV4Addr)>>,
+    echo_ip_v4: Duplex<Receiver<(u16, u16, IpV4Addr, u8)>, (u16, u16, IpV4Addr)>,
+    echo_data_ip_v4: HashMap<(u16, u16, IpV4Addr), Sender<(u16, u16, IpV4Addr, u8)>>,
 }
 
 impl IcmpProcess {
@@ -90,7 +90,7 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
         >,
     ) {
         match msg {
-            NetworkTransportMessage::IPv4(addr, payload) => {
+            NetworkTransportMessage::IPv4(addr, ttl, payload) => {
                 if let Some(msg) = IcmpPacket::from_vec(&payload) {
                     match msg {
                         IcmpPacket::EchoRequest { id, seq } => {
@@ -99,6 +99,7 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
                                     TransportLayerId::Icmp,
                                     NetworkTransportMessage::IPv4(
                                         addr,
+                                        None,
                                         IcmpPacket::EchoReply { id, seq }.to_vec(),
                                     ),
                                 ))
@@ -106,8 +107,11 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
                         }
                         IcmpPacket::EchoReply { id, seq } => {
                             if let Some(tx) = self.echo_data_ip_v4.remove(&(id, seq, addr)) {
-                                let _ = tx.send_async((id, seq, addr)).await;
+                                let _ = tx.send_async((id, seq, addr, ttl.unwrap_or(255))).await;
                             }
+                        }
+                        IcmpPacket::TimeExceeded(t) => {
+                            warn!("TTL exceeded: {t:?} source {addr} (ttl={ttl:?})")
                         }
                     }
                 }
@@ -162,6 +166,7 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
                                 TransportLayerId::Icmp,
                                 NetworkTransportMessage::IPv4(
                                     addr,
+                                    None,
                                     IcmpPacket::EchoRequest { id, seq }.to_vec(),
                                 ),
                             ))

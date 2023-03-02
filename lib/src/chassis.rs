@@ -61,7 +61,7 @@ pub type NetworkTransportPayload = NetworkTransportMessage;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NetworkTransportMessage {
-    IPv4(IpV4Addr, Vec<u8>),
+    IPv4(IpV4Addr, Option<u8>, Vec<u8>),
     // IPv6(IpV6Addr, Vec<u8>),
 }
 

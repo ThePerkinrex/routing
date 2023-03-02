@@ -21,7 +21,7 @@ async fn echo(
     id: u16,
     seq: u16,
     icmp_api: &IcmpApi,
-) -> Option<((u16, u16, IpV4Addr), std::time::Duration)> {
+) -> Option<((u16, u16, IpV4Addr, u8), std::time::Duration)> {
     let start = std::time::Instant::now();
 
     match tokio::time::timeout(
@@ -66,9 +66,9 @@ pub async fn ping(
                 res.write().await.push(None);
                 join_set.write().await.spawn(async move {
                     let res = echo(ip, timeout_secs, id, s as u16, &icmp_api).await;
-                    if let Some(((id, seq, addr), time)) = res.as_ref() {
+                    if let Some(((id, seq, addr, ttl), time)) = res.as_ref() {
                         info!(
-                            "Received reply from {addr} icmp_seq={seq} icmp_id={id} time={time:?}"
+                            "Received reply from {addr} icmp_seq={seq} icmp_id={id} ttl={ttl} time={time:?}"
                         )
                     }
                     res
@@ -93,7 +93,7 @@ pub async fn ping(
         f.abort();
     }
     while let Some(data) = join_set.write().await.join_next().await {
-        if let Ok(Some(((_, seq, _), d))) = data {
+        if let Ok(Some(((_, seq, _, _), d))) = data {
             res.write().await[seq as usize] = Some(d)
         }
     }
