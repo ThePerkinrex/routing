@@ -14,3 +14,4 @@ flume = "0.10.14"
 clap = {version = "4.1.6", features = ["derive"]}
 prettytable = "0.10"
 chrono = "0.4.23"
+async-ctrlc = "1.2.0"

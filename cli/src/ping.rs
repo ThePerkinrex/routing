@@ -1,4 +1,8 @@
+use std::{io::BufRead, sync::Arc};
+
+use async_ctrlc::CtrlC;
 use routing::{network::ipv4::addr::IpV4Addr, transport::icmp::IcmpApi};
+use tokio::{select, sync::RwLock};
 use tracing::{info, warn};
 
 #[derive(Debug, clap::Args)]
@@ -16,25 +20,22 @@ async fn echo(
     id: u16,
     seq: u16,
     icmp_api: &IcmpApi,
-) -> (u16, u16, Option<std::time::Duration>) {
+) -> Option<((u16, u16, IpV4Addr), std::time::Duration)> {
     let start = std::time::Instant::now();
-    (
-        id,
-        seq,
-        match tokio::time::timeout(
-            std::time::Duration::from_secs_f32(timeout),
-            icmp_api.echo_ip_v4(id, seq, ip),
-        )
-        .await
-        {
-            Ok(Some(_)) => Some(std::time::Instant::now() - start),
-            Ok(None) => {
-                warn!("Error sending or receiving packet");
-                None
-            }
-            Err(_) => None,
-        },
+
+    match tokio::time::timeout(
+        std::time::Duration::from_secs_f32(timeout),
+        icmp_api.echo_ip_v4(id, seq, ip),
     )
+    .await
+    {
+        Ok(Some(data)) => Some((data, std::time::Instant::now() - start)),
+        Ok(None) => {
+            warn!("Error sending or receiving packet");
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 pub async fn ping(
@@ -45,33 +46,68 @@ pub async fn ping(
     }: Ping,
     icmp_api: &IcmpApi,
 ) {
-    let mut join_set = tokio::task::JoinSet::new();
+    let join_set = Arc::new(RwLock::new(tokio::task::JoinSet::new()));
     let id = 0;
-    let n = number.unwrap_or(5);
-    for s in 0..n {
+    let n = number;
+    let res = Arc::new(RwLock::new(Vec::new()));
+    let mut f = {
+        let res = res.clone();
+        let join_set = join_set.clone();
         let icmp_api = icmp_api.clone();
-        join_set.spawn(async move { echo(ip, timeout_secs, id, s as u16, &icmp_api).await });
-        tokio::time::sleep(std::time::Duration::from_secs_f32(0.5)).await;
+        tokio::spawn(async move {
+            let range = n.map_or_else::<Box<dyn Iterator<Item = usize> + Send>, _, _>(
+                || Box::new(0..),
+                |n| Box::new(0..n),
+            );
+            for s in range {
+                let icmp_api = icmp_api.clone();
+                res.write().await.push(None);
+                join_set.write().await.spawn(async move {
+                    let res = echo(ip, timeout_secs, id, s as u16, &icmp_api).await;
+                    if let Some(((id, seq, addr), time)) = res.as_ref() {
+                        info!(
+                            "Received reply from {addr} icmp_seq={seq} icmp_id={id} time={time:?}"
+                        )
+                    }
+                    res
+                });
+                tokio::time::sleep(std::time::Duration::from_secs_f32(0.5)).await;
+            }
+        })
+    };
+    let stop = CtrlC::new().unwrap();
+    select! {
+        _ = &mut f => {
+            info!("Sent all")
+        }
+        _ = stop => {
+            info!("Ctrl-C")
+        }
+    }; // TODO CtrlC chain
+    if !f.is_finished() {
+        f.abort();
     }
-    let mut res = Vec::with_capacity(n);
-    while let Some(data) = join_set.join_next().await {
-        if let Ok(data) = data {
-            res.push(data);
+    match f.await {
+        Ok(()) => (),
+        Err(e) => warn!("Ping forcefully stopped: {e:?}"),
+    }
+    while let Some(data) = join_set.write().await.join_next().await {
+        if let Ok(Some(((_, seq, _), d))) = data {
+            res.write().await[seq as usize] = Some(d)
         }
     }
-    res.sort_by_key(|(a, b, _)| (*a, *b));
-    print_stats(&res);
+    print_stats(&res.read().await);
 }
 
-fn print_stats(data: &[(u16, u16, Option<std::time::Duration>)]) {
+fn print_stats(data: &[Option<std::time::Duration>]) {
     let sent = data.len();
-    let received = data.iter().filter(|(_, _, o)| o.is_some()).count();
+    let received = data.iter().filter(|o| o.is_some()).count();
     let lost = sent - received;
     let percent_lost = (lost as f32 * 100.) / (sent as f32);
 
     let (min, max, sum): (Option<std::time::Duration>, Option<std::time::Duration>, _) = data
         .iter()
-        .filter_map(|(_, _, o)| *o)
+        .filter_map(|o| *o)
         .fold((None, None, None), |(min, max, sum), d| {
             (
                 Some(min.map_or(d, |min| min.min(d))),
@@ -82,7 +118,7 @@ fn print_stats(data: &[(u16, u16, Option<std::time::Duration>)]) {
     let avg = sum.map(|x| x / received as u32);
     let std_dev = avg.map(|avg| {
         data.iter()
-            .filter_map(|(_, _, o)| *o)
+            .filter_map(|o| *o)
             .map(|d| d.as_secs_f64() - avg.as_secs_f64())
             .sum::<f64>()
             / f64::sqrt(received as f64)
