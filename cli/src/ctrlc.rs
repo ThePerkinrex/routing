@@ -27,25 +27,25 @@ pub struct CtrlC {
 }
 
 fn handle_ctrlc(lock: &mut Handles) {
-	lock.last()
-                .map(|(d_rx, n)| match d_rx.try_recv() {
-                    Ok(()) | Err(TryRecvError::Disconnected) => true,
-                    Err(TryRecvError::Empty) => {
-                        n.notify_one();
-                        false
-                    }
-                })
-                .map_or_else(
-                    || {
-                        warn!("No ctrl-c handlers");
-                    },
-                    |should_disc| {
-                        if should_disc {
-                            lock.pop();
-							handle_ctrlc(lock);
-                        }
-                    },
-                );
+    lock.last()
+        .map(|(d_rx, n)| match d_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => true,
+            Err(TryRecvError::Empty) => {
+                n.notify_one();
+                false
+            }
+        })
+        .map_or_else(
+            || {
+                warn!("No ctrl-c handlers");
+            },
+            |should_disc| {
+                if should_disc {
+                    lock.pop();
+                    handle_ctrlc(lock);
+                }
+            },
+        );
 }
 
 impl CtrlC {
