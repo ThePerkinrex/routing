@@ -1,9 +1,10 @@
-use std::{io::BufRead, sync::Arc};
+use std::sync::Arc;
 
-use async_ctrlc::CtrlC;
 use routing::{network::ipv4::addr::IpV4Addr, transport::icmp::IcmpApi};
 use tokio::{select, sync::RwLock};
 use tracing::{info, warn};
+
+use crate::ctrlc::CtrlC;
 
 #[derive(Debug, clap::Args)]
 pub struct Ping {
@@ -45,6 +46,7 @@ pub async fn ping(
         number,
     }: Ping,
     icmp_api: &IcmpApi,
+    ctrlc: &CtrlC,
 ) {
     let join_set = Arc::new(RwLock::new(tokio::task::JoinSet::new()));
     let id = 0;
@@ -75,21 +77,20 @@ pub async fn ping(
             }
         })
     };
-    let stop = CtrlC::new().unwrap();
-    select! {
-        _ = &mut f => {
-            info!("Sent all")
-        }
-        _ = stop => {
-            info!("Ctrl-C")
-        }
-    }; // TODO CtrlC chain
+    {
+        let handler = ctrlc.add_handler().await;
+        // let stop = CtrlC::new().unwrap();
+        select! {
+            _ = &mut f => {
+                info!("Sent all")
+            }
+            _ = handler.next() => {
+                info!("Ctrl-C")
+            }
+        };
+    }
     if !f.is_finished() {
         f.abort();
-    }
-    match f.await {
-        Ok(()) => (),
-        Err(e) => warn!("Ping forcefully stopped: {e:?}"),
     }
     while let Some(data) = join_set.write().await.join_next().await {
         if let Ok(Some(((_, seq, _), d))) = data {

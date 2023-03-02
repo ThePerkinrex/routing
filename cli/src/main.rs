@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::Write, ops::DerefMut, path::PathBuf};
 
 use clap::Parser;
-use tokio::{sync::RwLock, time::error::Elapsed};
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use routing::{
@@ -18,6 +18,9 @@ use routing::{
     transport::icmp::IcmpProcess,
 };
 
+use crate::ctrlc::CtrlC;
+
+mod ctrlc;
 mod ping;
 
 #[derive(Debug, clap::Parser)]
@@ -108,6 +111,12 @@ async fn start() {
     let mut current_chassis = None;
     let mut chassis = HashMap::new();
     let mut lines = Vec::new();
+    let ctrlc = CtrlC::new().unwrap();
+    let base_handler = ctrlc.add_handler().await;
+    tokio::spawn(async move {
+        base_handler.next().await;
+        std::process::exit(1);
+    });
     loop {
         buffer.clear();
         if let Some(line) = lines.pop() {
@@ -199,7 +208,7 @@ async fn start() {
                         info!("Exiting chassis `{name}`");
                         current_chassis = None
                     }
-                    Ok(ChassisCommands::Ping(args)) => ping::ping(args, icmp_api).await,
+                    Ok(ChassisCommands::Ping(args)) => ping::ping(args, icmp_api, &ctrlc).await,
                     Ok(ChassisCommands::Arp(cmd)) => match cmd {
                         ArpCmd::IpV4List => {
                             if let Some(data) = arphandle.get_ipv4_table().await {
