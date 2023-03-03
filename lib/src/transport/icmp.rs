@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use either::Either;
-use flume::{Receiver, RecvError, Sender};
+use flume::{Receiver, RecvError, SendError, Sender};
 use tokio::task::JoinSet;
 use tracing::{trace, warn};
 
@@ -13,7 +13,7 @@ use crate::{
     network::ipv4::addr::IpV4Addr,
 };
 
-use self::packet::IcmpPacket;
+use self::packet::{IcmpPacket, TimeExceeded};
 
 pub mod packet;
 
@@ -22,6 +22,7 @@ type Duplex<Tx, Rx> = (Sender<Tx>, Arc<Receiver<Rx>>);
 #[derive(Debug, Clone)]
 pub struct IcmpApi {
     echo_ip_v4: Duplex<(u16, u16, IpV4Addr), Receiver<(u16, u16, IpV4Addr, u8)>>,
+    handler_ttl_ip_v4: Duplex<Vec<u8>, Receiver<IpV4Addr>>,
 }
 
 impl IcmpApi {
@@ -49,24 +50,44 @@ impl IcmpApi {
             .map_err(|e| warn!("Echo recv err: {e}"))
             .ok()
     }
+
+    pub async fn get_ttl_handler(&self, payload: Vec<u8>) -> Option<Receiver<IpV4Addr>> {
+        self.handler_ttl_ip_v4.0.send_async(payload).await.ok()?;
+        self.handler_ttl_ip_v4.1.recv_async().await.ok()
+    }
 }
 
 pub struct IcmpProcess {
     echo_ip_v4: Duplex<Receiver<(u16, u16, IpV4Addr, u8)>, (u16, u16, IpV4Addr)>,
     echo_data_ip_v4: HashMap<(u16, u16, IpV4Addr), Sender<(u16, u16, IpV4Addr, u8)>>,
+    get_ttl_handler_ip_v4: Duplex<Receiver<IpV4Addr>, Vec<u8>>,
+    ttl_handler_ip_v4: HashMap<Vec<u8>, Sender<IpV4Addr>>,
 }
 
 impl IcmpProcess {
     pub fn new() -> (Self, IcmpApi) {
         let (echo_ip_v4_internal_tx, echo_ip_v4_external_rx) = flume::unbounded();
         let (echo_ip_v4_external_tx, echo_ip_v4_internal_rx) = flume::unbounded();
+        let (get_ttl_handler_ip_v4_internal_tx, get_ttl_handler_ip_v4_external_rx) =
+            flume::unbounded();
+        let (get_ttl_handler_ip_v4_external_tx, get_ttl_handler_ip_v4_internal_rx) =
+            flume::unbounded();
         (
             Self {
                 echo_ip_v4: (echo_ip_v4_internal_tx, Arc::new(echo_ip_v4_internal_rx)),
                 echo_data_ip_v4: HashMap::new(),
+                get_ttl_handler_ip_v4: (
+                    get_ttl_handler_ip_v4_internal_tx,
+                    Arc::new(get_ttl_handler_ip_v4_internal_rx),
+                ),
+                ttl_handler_ip_v4: HashMap::new(),
             },
             IcmpApi {
                 echo_ip_v4: (echo_ip_v4_external_tx, Arc::new(echo_ip_v4_external_rx)),
+                handler_ttl_ip_v4: (
+                    get_ttl_handler_ip_v4_external_tx,
+                    Arc::new(get_ttl_handler_ip_v4_external_rx),
+                ),
             },
         )
     }
@@ -74,6 +95,7 @@ impl IcmpProcess {
 
 pub enum ExtraMessage {
     EchoIpV4(Result<(u16, u16, IpV4Addr), RecvError>),
+    SetTtlHandler(Result<Vec<u8>, RecvError>),
 }
 
 #[async_trait::async_trait]
@@ -110,9 +132,16 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
                                 let _ = tx.send_async((id, seq, addr, ttl.unwrap_or(255))).await;
                             }
                         }
-                        IcmpPacket::TimeExceeded(t) => {
-                            warn!("TTL exceeded: {t:?} source {addr} (ttl={ttl:?})")
-                        }
+                        IcmpPacket::TimeExceeded(t) => match t {
+                            TimeExceeded::TtlTransit { data } => {
+                                warn!(data = ?data, "TTL exceeded: source {addr} (ttl={ttl:?})");
+                                if let Some(h) = self.ttl_handler_ip_v4.get(&data).cloned() {
+                                    if h.send_async(addr).await.is_err() {
+                                        self.ttl_handler_ip_v4.remove(&data);
+                                    }
+                                }
+                            }
+                        },
                     }
                 }
             }
@@ -132,6 +161,10 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
     ) {
         let rx = self.echo_ip_v4.1.clone();
         join_set.spawn(async move { Either::Right(ExtraMessage::EchoIpV4(rx.recv_async().await)) });
+        let rx = self.get_ttl_handler_ip_v4.1.clone();
+        join_set.spawn(
+            async move { Either::Right(ExtraMessage::SetTtlHandler(rx.recv_async().await)) },
+        );
     }
     type Extra = ExtraMessage;
     async fn on_extra_message(
@@ -152,6 +185,20 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
         >,
     ) {
         match msg {
+            ExtraMessage::SetTtlHandler(msg) => match msg {
+                Ok(payload) => {
+                    let (tx, rx) = flume::unbounded();
+                    self.ttl_handler_ip_v4.insert(payload, tx);
+                    let _ = self.get_ttl_handler_ip_v4.0.send_async(rx).await;
+
+                    let rx = self.get_ttl_handler_ip_v4.1.clone();
+                    join_set.spawn(async move {
+                        Either::Right(ExtraMessage::SetTtlHandler(rx.recv_async().await))
+                    });
+                }
+
+                Err(RecvError::Disconnected) => warn!("Handler set ttl handler ip v4 disconnected"),
+            },
             ExtraMessage::EchoIpV4(msg) => match msg {
                 Ok(msg) => {
                     let (tx, rx) = flume::bounded(1);
@@ -172,11 +219,14 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
                             ))
                             .await;
                     }
+
+                    let rx = self.echo_ip_v4.1.clone();
+                    join_set.spawn(async move {
+                        Either::Right(ExtraMessage::EchoIpV4(rx.recv_async().await))
+                    });
                 }
                 Err(RecvError::Disconnected) => warn!("Handler echo ip v4 disconnected"),
             },
         }
-        let rx = self.echo_ip_v4.1.clone();
-        join_set.spawn(async move { Either::Right(ExtraMessage::EchoIpV4(rx.recv_async().await)) });
     }
 }
