@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use routing::{
-    chassis::{self, Chassis, LinkLayerId, NicHandle},
+    chassis::{self, Chassis, LinkLayerId, NicHandle, TransportLayerId},
     link::ethernet::nic::Nic,
     mac::{self, Mac},
     network::arp::ArpProcess,
@@ -15,7 +15,7 @@ use routing::{
         IpV4Process,
     },
     route::RoutingEntry,
-    transport::icmp::IcmpProcess,
+    transport::{icmp::IcmpProcess, udp::{UdpProcessGeneric, UdpProcess}},
 };
 
 use crate::ctrlc::CtrlC;
@@ -46,6 +46,7 @@ enum ChassisCommands {
     #[command(subcommand)]
     Arp(ArpCmd),
     Ping(ping::Ping),
+    Traceroute(traceroute::Traceroute),
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -163,6 +164,8 @@ async fn start() {
                             c.add_network_layer_process(chassis::NetworkLayerId::Ipv4, ip);
                             let (icmp, icmp_api) = IcmpProcess::new();
                             c.add_transport_layer_process(chassis::TransportLayerId::Icmp, icmp);
+                            let (udp_ip_v4, udp_ip_v4_handle) = UdpProcessGeneric::new();
+                            c.add_transport_layer_process(chassis::TransportLayerId::Udp, UdpProcess::new(udp_ip_v4));
                             chassis.insert(
                                 name,
                                 RwLock::new((
@@ -171,6 +174,7 @@ async fn start() {
                                     HashMap::<LinkLayerId, NicHandle>::default(),
                                     arphandle,
                                     icmp_api,
+                                    (udp_ip_v4_handle, )
                                 )),
                             );
                         }
@@ -194,7 +198,7 @@ async fn start() {
             }
             Some(name) => {
                 let mut guard = chassis.get(name).unwrap().write().await;
-                let (chassis_struct, ipv4_config, link_level_handles, arphandle, icmp_api) =
+                let (chassis_struct, ipv4_config, link_level_handles, arphandle, icmp_api, udp_handles) =
                     guard.deref_mut();
                 if buffer.is_empty() {
                     print!("({name}) > ");
@@ -209,6 +213,7 @@ async fn start() {
                         current_chassis = None
                     }
                     Ok(ChassisCommands::Ping(args)) => ping::ping(args, icmp_api, &ctrlc).await,
+                    Ok(ChassisCommands::Traceroute(args)) => traceroute::traceroute(args, icmp_api, &ctrlc, udp_handles).await,
                     Ok(ChassisCommands::Arp(cmd)) => match cmd {
                         ArpCmd::IpV4List => {
                             if let Some(data) = arphandle.get_ipv4_table().await {

@@ -5,6 +5,7 @@ use flume::{Receiver, RecvError, Sender};
 use tokio::task::JoinSet;
 
 use futures::FutureExt;
+use tracing::{warn, trace};
 
 use crate::{
     chassis::{
@@ -35,6 +36,27 @@ pub struct Socket<Addr> {
     duplex: Duplex<Data<Addr>, Data<Addr>>,
 }
 
+impl<Addr: Send> Socket<Addr> {
+    pub async fn send(&self, dest: (Addr, u16), payload: Vec<u8>) {
+        self.send_ttl_internal(dest, payload, None).await
+    }
+
+
+    pub async fn send_ttl(&self, dest: (Addr, u16), payload: Vec<u8>, ttl: u8) {
+        self.send_ttl_internal(dest, payload, Some(ttl)).await
+    }
+
+    async fn send_ttl_internal(&self, (addr, port): (Addr, u16), payload: Vec<u8>, ttl: Option<u8>) {
+        if self.duplex.0.send_async((addr, port, payload, ttl)).await.is_err() {
+            warn!("UDP Packet not sent");
+        }
+    }
+
+    pub async fn recv(&self) -> Result<Data<Addr>, RecvError> {
+        self.duplex.1.recv_async().await
+    }
+}
+
 struct SocketController<Addr> {
     map: HashMap<u16, Duplex<Data<Addr>, Data<Addr>>>,
 }
@@ -63,6 +85,14 @@ pub struct UdpHandleGeneric<Addr> {
     add_socket: Sender<(u16, tokio::sync::oneshot::Sender<Socket<Addr>>)>,
 }
 
+impl<Addr: Send> UdpHandleGeneric<Addr> {
+    pub async fn get_socket(&self, port: u16) -> Result<Socket<Addr>, ()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.add_socket.send_async((port, tx)).await.map_err(|_| ())?;
+        rx.await.map_err(|_| ())
+    }
+}
+
 pub struct UdpProcessGeneric<Addr> {
     sockets: SocketController<Addr>,
     add_socket: Arc<Receiver<(u16, tokio::sync::oneshot::Sender<Socket<Addr>>)>>,
@@ -80,7 +110,6 @@ impl<Addr> UdpProcessGeneric<Addr> {
         )
     }
 }
-
 pub enum ExtraMessageGeneric<Addr> {
     SocketMessage(u16, Result<Data<Addr>, RecvError>),
     AddSocket(Result<(u16, tokio::sync::oneshot::Sender<Socket<Addr>>), RecvError>),
@@ -106,8 +135,8 @@ trait TransportLevelComposableProcess {
         &mut self,
         _msg: Self::Extra,
         _send_down: F,
-    ) -> Option<Pin<Box<dyn Future<Output = Self::Extra> + Send>>> {
-        None
+    ) -> Vec<Pin<Box<dyn Future<Output = Self::Extra> + Send>>> {
+        vec![]
     }
 
     async fn on_down_message<
@@ -125,6 +154,7 @@ trait TransportLevelComposableProcess {
 impl<Addr> TransportLevelComposableProcess for UdpProcessGeneric<Addr>
 where
     Addr: Send + 'static,
+    Addr: std::fmt::Debug,
 {
     type Extra = ExtraMessageGeneric<Addr>;
     type Addr = Addr;
@@ -153,21 +183,25 @@ where
         &mut self,
         msg: Self::Extra,
         send_down: F,
-    ) -> Option<Pin<Box<dyn Future<Output = Self::Extra> + Send>>> {
+    ) -> Vec<Pin<Box<dyn Future<Output = Self::Extra> + Send>>> {
         match msg {
             ExtraMessageGeneric::AddSocket(r) => match r {
                 Ok((port, sender)) => {
                     let _ = sender.send(self.sockets.add_socket(port));
                     let rx = self.add_socket.clone();
-                    Some(
+                    vec![
                         async move { ExtraMessageGeneric::AddSocket(rx.recv_async().await) }
                             .boxed(),
-                    )
+                    ] // TODO Add socket
                 }
-                Err(RecvError::Disconnected) => None,
+                Err(RecvError::Disconnected) => {
+                    warn!("Add socket disconnected");
+                    vec![]
+                },
             },
             ExtraMessageGeneric::SocketMessage(port, r) => match r {
                 Ok((dest_addr, dest_port, payload, ttl)) => {
+                    trace!("Sending udp packet to {dest_addr:?}:{dest_port} with payload: {payload:?} (ttl={ttl:?})");
                     send_down(
                         dest_addr,
                         UdpPacket {
@@ -184,13 +218,16 @@ where
                         .get(&port)
                         .map(|(_, rx)| rx.clone())
                         .map(|rx| {
-                            async move {
+                            vec![async move {
                                 ExtraMessageGeneric::SocketMessage(port, rx.recv_async().await)
                             }
-                            .boxed()
-                        })
+                            .boxed()]
+                        }).unwrap_or_default()
                 }
-                Err(RecvError::Disconnected) => None,
+                Err(RecvError::Disconnected) => {
+                    warn!("Socket message for port {port} disconnected");
+                    vec![]
+                },
             },
         }
     }
@@ -300,7 +337,7 @@ impl TransportLevelProcess<TransportLayerId, NetworkLayerId, NetworkTransportMes
     ) {
         match msg {
             ExtraMessage::IPv4(msg) => {
-                if let Some(r) = self
+                for r in self
                     .ip_v4
                     .on_extra(msg, |addr, payload, ttl| async move {
                         if let Some(tx) = down_sender.get(&NetworkLayerId::Ipv4) {
