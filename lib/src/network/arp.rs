@@ -287,11 +287,20 @@ impl
             ExtraMessage::GetIpV4(ip) => match ip {
                 Ok((ip, id)) => {
                     if let Some(ipv4_handle) = &self.ipv4_handle {
-                        if let Some((_, table)) = self.ipv4.as_mut() {
-                            if let Some((addr, _time)) = table.get(&(ip, id)) {
-                                // TODO, is it old?
-                                // trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
-                                let _ = ipv4_handle.1.send_async(*addr).await;
+                        if let Some((config, table)) = self.ipv4.as_mut() {
+                            let ttl = config.read().await.arp_ttl;
+                            if let Some(addr) =
+                                table.get(&(ip, id)).copied().and_then(|(addr, time)| {
+                                    if time - Local::now() > ttl {
+                                        table.remove(&(ip, id));
+                                        None
+                                    } else {
+                                        Some(addr)
+                                    }
+                                })
+                            {
+                                trace!("ARP: Sending known MAC address ({addr}) for IPv4 {ip}");
+                                let _ = ipv4_handle.1.send_async(addr).await;
                             } else {
                                 trace!("ARP: Searching for MAC address for IPv4 {ip}");
                                 if let Some((id, sender)) = down_sender.get_key_value(&id) {

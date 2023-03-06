@@ -10,6 +10,7 @@ use super::addr::{IpV4Addr, IpV4Mask, DEFAULT};
 pub struct IpV4ConfigInner {
     pub addr: IpV4Addr,
     pub routing: RoutingTable<IpV4Addr, IpV4Mask, LinkLayerId>,
+    pub arp_ttl: chrono::Duration,
     pub dhcp_run: bool,
 }
 
@@ -19,6 +20,7 @@ impl Default for IpV4ConfigInner {
             addr: DEFAULT,
             routing: Default::default(),
             dhcp_run: Default::default(),
+            arp_ttl: chrono::Duration::seconds(5),
         }
     }
 }

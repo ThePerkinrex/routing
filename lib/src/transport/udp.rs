@@ -5,7 +5,7 @@ use flume::{Receiver, RecvError, Sender};
 use tokio::task::JoinSet;
 
 use futures::FutureExt;
-use tracing::{warn, trace};
+use tracing::{trace, warn};
 
 use crate::{
     chassis::{
@@ -41,13 +41,23 @@ impl<Addr: Send> Socket<Addr> {
         self.send_ttl_internal(dest, payload, None).await
     }
 
-
     pub async fn send_ttl(&self, dest: (Addr, u16), payload: Vec<u8>, ttl: u8) {
         self.send_ttl_internal(dest, payload, Some(ttl)).await
     }
 
-    async fn send_ttl_internal(&self, (addr, port): (Addr, u16), payload: Vec<u8>, ttl: Option<u8>) {
-        if self.duplex.0.send_async((addr, port, payload, ttl)).await.is_err() {
+    async fn send_ttl_internal(
+        &self,
+        (addr, port): (Addr, u16),
+        payload: Vec<u8>,
+        ttl: Option<u8>,
+    ) {
+        if self
+            .duplex
+            .0
+            .send_async((addr, port, payload, ttl))
+            .await
+            .is_err()
+        {
             warn!("UDP Packet not sent");
         }
     }
@@ -68,10 +78,11 @@ impl<Addr> SocketController<Addr> {
         }
     }
 
-    fn add_socket(&mut self, port: u16) -> Socket<Addr> {
+    fn add_socket(&mut self, port: u16) -> (Socket<Addr>, Arc<Receiver<Data<Addr>>>) {
         let (internal, external) = new_pair();
+        let rx = internal.1.clone();
         self.map.insert(port, internal);
-        Socket { duplex: external }
+        (Socket { duplex: external }, rx)
     }
 }
 
@@ -88,7 +99,10 @@ pub struct UdpHandleGeneric<Addr> {
 impl<Addr: Send> UdpHandleGeneric<Addr> {
     pub async fn get_socket(&self, port: u16) -> Result<Socket<Addr>, ()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.add_socket.send_async((port, tx)).await.map_err(|_| ())?;
+        self.add_socket
+            .send_async((port, tx))
+            .await
+            .map_err(|_| ())?;
         rx.await.map_err(|_| ())
     }
 }
@@ -187,17 +201,19 @@ where
         match msg {
             ExtraMessageGeneric::AddSocket(r) => match r {
                 Ok((port, sender)) => {
-                    let _ = sender.send(self.sockets.add_socket(port));
+                    let (socket, rx2) = self.sockets.add_socket(port);
+                    let _ = sender.send(socket);
                     let rx = self.add_socket.clone();
                     vec![
                         async move { ExtraMessageGeneric::AddSocket(rx.recv_async().await) }
                             .boxed(),
-                    ] // TODO Add socket
+                        async move { ExtraMessageGeneric::SocketMessage(port, rx2.recv_async().await) }.boxed()
+                    ]
                 }
                 Err(RecvError::Disconnected) => {
                     warn!("Add socket disconnected");
                     vec![]
-                },
+                }
             },
             ExtraMessageGeneric::SocketMessage(port, r) => match r {
                 Ok((dest_addr, dest_port, payload, ttl)) => {
@@ -222,12 +238,13 @@ where
                                 ExtraMessageGeneric::SocketMessage(port, rx.recv_async().await)
                             }
                             .boxed()]
-                        }).unwrap_or_default()
+                        })
+                        .unwrap_or_default()
                 }
                 Err(RecvError::Disconnected) => {
-                    warn!("Socket message for port {port} disconnected");
+                    // warn!("Socket message for port {port} disconnected");
                     vec![]
-                },
+                }
             },
         }
     }

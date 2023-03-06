@@ -123,59 +123,61 @@ impl
         trace!(IP = ?ip, "Recieved from {down_id} {source_mac}: {msg:?}");
         if let Some(mut ip_packet) = Ipv4Packet::from_vec(&msg) {
             trace!(IP = ?ip, "Recieved IP packet: {ip_packet:?}");
-            if ip_packet.header.destination == ip {
-                // TODO fragmented packets`
-                if let Some(up_id) = match ip_packet.header.protocol {
-                    protocol::ProtocolType::TCP => Some(TransportLayerId::Tcp),
-                    protocol::ProtocolType::UDP => Some(TransportLayerId::Udp),
-                    protocol::ProtocolType::ICMP => Some(TransportLayerId::Icmp),
-                    x => {
-                        warn!(IP = ?ip, "Unknown IP protocol: {x:?}");
-                        None
-                    }
-                } {
-                    if let Some(sender) = up_sender.get(&up_id) {
-                        let _ = sender
-                            .send_async(ProcessMessage::Message(
-                                NetworkLayerId::Ipv4,
-                                NetworkTransportMessage::IPv4(
-                                    ip_packet.header.source,
-                                    Some(ip_packet.header.time_to_live),
-                                    ip_packet.payload,
-                                ),
-                            ))
-                            .await;
-                    }
-                }
-            } else if ip_packet.header.time_to_live > 0 {
-                ip_packet.header.time_to_live -= 1;
-                if let Some((next_hop, iface)) = self
-                    .config
-                    .read()
-                    .await
-                    .routing
-                    .get_route(ip_packet.header.destination)
-                {
-                    if let Some(Ok(dest_mac)) = self
-                        .arp
-                        .get_haddr_timeout((next_hop, iface), std::time::Duration::from_secs(1))
-                        .await
-                    {
-                        trace!(IP = ?ip, "Sending IPv4 packet to interface: {iface} next_hop {next_hop} ({dest_mac})");
-                        if let Some(sender) = down_sender.get(&iface) {
+            if ip_packet.header.time_to_live > 0 {
+                if ip_packet.header.destination == ip {
+                    // TODO fragmented packets`
+                    if let Some(up_id) = match ip_packet.header.protocol {
+                        protocol::ProtocolType::TCP => Some(TransportLayerId::Tcp),
+                        protocol::ProtocolType::UDP => Some(TransportLayerId::Udp),
+                        protocol::ProtocolType::ICMP => Some(TransportLayerId::Icmp),
+                        x => {
+                            warn!(IP = ?ip, "Unknown IP protocol: {x:?}");
+                            None
+                        }
+                    } {
+                        if let Some(sender) = up_sender.get(&up_id) {
                             let _ = sender
                                 .send_async(ProcessMessage::Message(
                                     NetworkLayerId::Ipv4,
-                                    (dest_mac, ip_packet.to_vec()),
+                                    NetworkTransportMessage::IPv4(
+                                        ip_packet.header.source,
+                                        Some(ip_packet.header.time_to_live),
+                                        ip_packet.payload,
+                                    ),
                                 ))
                                 .await;
                         }
                     }
                 } else {
-                    warn!(IP = ?ip, "Can't find route to {}", ip_packet.header.destination);
+                    ip_packet.header.time_to_live -= 1;
+                    if let Some((next_hop, iface)) = self
+                        .config
+                        .read()
+                        .await
+                        .routing
+                        .get_route(ip_packet.header.destination)
+                    {
+                        if let Some(Ok(dest_mac)) = self
+                            .arp
+                            .get_haddr_timeout((next_hop, iface), std::time::Duration::from_secs(1))
+                            .await
+                        {
+                            trace!(IP = ?ip, "Sending IPv4 packet to interface: {iface} next_hop {next_hop} ({dest_mac})");
+                            if let Some(sender) = down_sender.get(&iface) {
+                                let _ = sender
+                                    .send_async(ProcessMessage::Message(
+                                        NetworkLayerId::Ipv4,
+                                        (dest_mac, ip_packet.to_vec()),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    } else {
+                        warn!(IP = ?ip, "Can't find route to {}", ip_packet.header.destination);
+                    }
                 }
             } else {
-                warn!(IP = ?ip, "Dropped packet, sending icmp packet back");
+                trace!(IP = ?ip, "Dropped packet, sending icmp packet back");
                 let mut data = ip_packet.header.to_vec();
                 data.extend_from_slice(&ip_packet.payload[..(8.min(ip_packet.payload.len()))]);
                 self.send_message(
