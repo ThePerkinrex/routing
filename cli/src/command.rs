@@ -1,9 +1,11 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
+use tokio::sync::RwLock;
 use tracing::warn;
 
-use crate::chassis::ChassisManager;
+use crate::{chassis::ChassisManager, ctrlc::CtrlC};
 
+pub mod chassis;
 pub mod general;
 
 #[async_trait::async_trait]
@@ -11,14 +13,23 @@ pub trait Command<Extra, Ret> {
     async fn run_cmd(
         &mut self,
         args: &[&str],
-        chassis_manager: &mut ChassisManager,
+        chassis_manager: Arc<RwLock<ChassisManager>>,
+        ctrlc: &CtrlC,
         extra: Extra,
     ) -> Ret;
 }
 
 #[async_trait::async_trait]
 pub trait ParsedCommand<Args: clap::Parser, Extra, Ret> {
-    async fn run(&mut self, args: Args, chassis_manager: &mut ChassisManager, extra: Extra) -> Ret;
+    async fn run(
+        &mut self,
+        args: Args,
+        chassis_manager: Arc<RwLock<ChassisManager>>,
+        ctrlc: &CtrlC,
+        extra: Extra,
+    ) -> Ret
+    where
+        Extra: 'async_trait;
 }
 
 pub struct PCmd<Args, E, R, T> {
@@ -50,11 +61,12 @@ where
     async fn run_cmd(
         &mut self,
         args: &[&str],
-        chassis_manager: &mut ChassisManager,
+        chassis_manager: Arc<RwLock<ChassisManager>>,
+        ctrlc: &CtrlC,
         extra: Extra,
     ) -> Result<Ret, clap::Error> {
         let args = Args::try_parse_from(args)?;
-        Ok(self.t.run(args, chassis_manager, extra).await)
+        Ok(self.t.run(args, chassis_manager, ctrlc, extra).await)
     }
 }
 
@@ -88,11 +100,12 @@ impl<E: Send, R: Send> CommandManager<E, R> {
     pub async fn call(
         &mut self,
         args: &[&str],
-        chassis_manager: &mut ChassisManager,
+        chassis_manager: Arc<RwLock<ChassisManager>>,
+        ctrlc: &CtrlC,
         extra: E,
     ) -> Option<R> {
         if let Some(c) = self.commands.get_mut(args[0]) {
-            Some(c.run_cmd(args, chassis_manager, extra).await)
+            Some(c.run_cmd(args, chassis_manager, ctrlc, extra).await)
         } else {
             warn!("Command `{}` not found, available options:", args[0]);
             for name in self.commands.keys() {

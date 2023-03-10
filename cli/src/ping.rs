@@ -4,9 +4,9 @@ use routing::{network::ipv4::addr::IpV4Addr, transport::icmp::IcmpApi};
 use tokio::{select, sync::RwLock};
 use tracing::{info, warn};
 
-use crate::ctrlc::CtrlC;
+use crate::{chassis::ChassisData, command::chassis::ParsedChassisCommandRead, ctrlc::CtrlC};
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, clap::Parser)]
 pub struct Ping {
     ip: IpV4Addr,
     #[arg(long, short, default_value_t = 5.)]
@@ -134,5 +134,21 @@ fn print_stats(data: &[Option<std::time::Duration>]) {
             if std_dev < 0. { "-" } else { "+" },
             std::time::Duration::from_secs_f64(std_dev.abs())
         );
+    }
+}
+
+pub struct PingCommand;
+
+#[async_trait::async_trait]
+impl ParsedChassisCommandRead<Ping> for PingCommand {
+    async fn run(
+        &mut self,
+        args: Ping,
+        ctrlc: &CtrlC,
+        _: String,
+        ChassisData { icmp, .. }: &ChassisData,
+    ) -> bool {
+        ping(args, icmp, ctrlc).await;
+        false
     }
 }

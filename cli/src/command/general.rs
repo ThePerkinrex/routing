@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use routing::{
     chassis::{Chassis, NetworkLayerId, TransportLayerId},
     network::{
@@ -12,7 +14,10 @@ use routing::{
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::chassis::{ChassisData, ChassisManager};
+use crate::{
+    chassis::{ChassisData, ChassisManager},
+    ctrlc::CtrlC,
+};
 
 use super::ParsedCommand;
 
@@ -21,7 +26,13 @@ pub struct Stop;
 
 #[async_trait::async_trait]
 impl ParsedCommand<Self, (), Option<String>> for Stop {
-    async fn run(&mut self, _: Self, _: &mut ChassisManager, (): ()) -> Option<String> {
+    async fn run(
+        &mut self,
+        _: Self,
+        _: Arc<RwLock<ChassisManager>>,
+        _: &CtrlC,
+        (): (),
+    ) -> Option<String> {
         info!("Exiting");
         std::process::exit(0);
     }
@@ -32,9 +43,15 @@ pub struct List;
 
 #[async_trait::async_trait]
 impl ParsedCommand<Self, (), Option<String>> for List {
-    async fn run(&mut self, _: Self, chassis: &mut ChassisManager, (): ()) -> Option<String> {
+    async fn run(
+        &mut self,
+        _: Self,
+        chassis: Arc<RwLock<ChassisManager>>,
+        _: &CtrlC,
+        (): (),
+    ) -> Option<String> {
         info!("Chassis list:");
-        for (i, chassis) in chassis.keys().enumerate() {
+        for (i, chassis) in chassis.read().await.keys().enumerate() {
             info!("   [{i}] {chassis}")
         }
         None
@@ -54,10 +71,11 @@ impl ParsedCommand<New, (), Option<String>> for NewCommand {
     async fn run(
         &mut self,
         New { name }: New,
-        chassis: &mut ChassisManager,
+        chassis: Arc<RwLock<ChassisManager>>,
+        _: &CtrlC,
         (): (),
     ) -> Option<String> {
-        if chassis.contains_key(&name) {
+        if chassis.read().await.contains_key(&name) {
             warn!("Chassis with name `{name}` already exists");
             info!("Using chassis `{name}`");
             Some(name)
@@ -74,7 +92,7 @@ impl ParsedCommand<New, (), Option<String>> for NewCommand {
             c.add_transport_layer_process(TransportLayerId::Icmp, icmp);
             let (udp_ip_v4, udp_ip_v4_handle) = UdpProcessGeneric::new();
             c.add_transport_layer_process(TransportLayerId::Udp, UdpProcess::new(udp_ip_v4));
-            chassis.insert(
+            chassis.write().await.insert(
                 name,
                 RwLock::new(ChassisData::new(
                     c,
@@ -101,10 +119,11 @@ impl ParsedCommand<Use, (), Option<String>> for UseCommand {
     async fn run(
         &mut self,
         Use { name }: Use,
-        chassis: &mut ChassisManager,
+        chassis: Arc<RwLock<ChassisManager>>,
+        _: &CtrlC,
         (): (),
     ) -> Option<String> {
-        if chassis.contains_key(&name) {
+        if chassis.read().await.contains_key(&name) {
             info!("Using chassis `{name}`");
             Some(name)
         } else {

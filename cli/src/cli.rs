@@ -8,7 +8,7 @@ use std::{
 use tokio::sync::{AcquireError, RwLock, Semaphore};
 use tracing::error;
 
-use crate::{chassis::ChassisManager, command::ParsedCommand};
+use crate::{chassis::ChassisManager, command::ParsedCommand, ctrlc::CtrlC};
 
 #[derive(Debug, clap::Parser)]
 pub struct Source {
@@ -21,10 +21,21 @@ pub struct SourceCommand {
 
 #[async_trait::async_trait]
 impl<R: Default + Send, E: Send + 'static> ParsedCommand<Source, E, R> for &SourceCommand {
-    async fn run(&mut self, Source { path }: Source, _: &mut ChassisManager, _: E) -> R {
+    async fn run(
+        &mut self,
+        Source { path }: Source,
+        _: Arc<RwLock<ChassisManager>>,
+        _: &CtrlC,
+        _: E,
+    ) -> R {
         match tokio::fs::read_to_string(path).await {
             Ok(file) => {
-                let _ = self.lines.send(file.lines().map(ToString::to_string).rev().collect::<Vec<_>>());
+                let _ = self.lines.send(
+                    file.lines()
+                        .map(ToString::to_string)
+                        .rev()
+                        .collect::<Vec<_>>(),
+                );
             }
             Err(e) => error!("Read error: {e}"),
         }
@@ -45,7 +56,7 @@ impl CliCommands {
         Ok(CommandHandle {
             cmd: self.commands.write().await.pop().unwrap(),
             barrier: self.barrier.clone(),
-			number_of_commands: self.number_of_commands.clone()
+            number_of_commands: self.number_of_commands.clone(),
         })
     }
 }
@@ -66,9 +77,9 @@ impl Deref for CommandHandle {
 
 impl Drop for CommandHandle {
     fn drop(&mut self) {
-		if self.number_of_commands.available_permits() == 0 {
-			self.barrier.wait();
-		}
+        if self.number_of_commands.available_permits() == 0 {
+            self.barrier.wait();
+        }
     }
 }
 
@@ -97,7 +108,7 @@ pub fn cli() -> (CliCommands, SourceCommand) {
                 tx2.send(vec![buf.clone()]).unwrap();
                 barrier_clone.wait();
             }
-			buf.clear();
+            buf.clear();
             print!(" > ");
             std::io::stdout().flush().unwrap();
         }

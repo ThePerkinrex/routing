@@ -753,6 +753,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "flume",
+ "futures",
  "prettytable",
  "routing",
  "tokio",

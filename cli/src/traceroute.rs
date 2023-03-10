@@ -7,9 +7,9 @@ use routing::{
 };
 use tracing::{info, trace, warn};
 
-use crate::ctrlc::CtrlC;
+use crate::{chassis::ChassisData, command::chassis::ParsedChassisCommandRead, ctrlc::CtrlC};
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, clap::Parser)]
 pub struct Traceroute {
     ip: IpV4Addr,
     #[arg(long, short, default_value_t = 5.)]
@@ -63,5 +63,24 @@ pub async fn traceroute(
     }
     if max_hops == Some(0) {
         warn!("Max hops reached");
+    }
+}
+
+pub struct TracerouteCommand;
+
+#[async_trait::async_trait]
+impl ParsedChassisCommandRead<Traceroute> for TracerouteCommand {
+    async fn run(
+        &mut self,
+        args: Traceroute,
+
+        ctrlc: &CtrlC,
+        _: String,
+        ChassisData {
+            icmp, udp_handles, ..
+        }: &ChassisData,
+    ) -> bool {
+        traceroute(args, icmp, ctrlc, udp_handles).await;
+        false
     }
 }
