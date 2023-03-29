@@ -160,7 +160,6 @@ async fn start() {
                     }
                     None => None,
                 }
-                
             }
             Some(name) => {
                 // let ChassisData {

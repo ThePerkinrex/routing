@@ -7,6 +7,8 @@ use flume::{Receiver, RecvError, Sender};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{trace, warn};
 
+pub mod switch;
+
 use crate::{
     either::ThreeWayEither,
     link::ethernet::{ethertype::EtherType, nic::Nic, packet::EthernetPacket},
