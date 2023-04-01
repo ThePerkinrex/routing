@@ -17,8 +17,10 @@ impl Tag {
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
-        let res = ((self.priority_code_point as u16) << 13) | (self.drop_elegible as u16) << 12 | self.vlan_id;
-		res.to_be_bytes().to_vec()
+        let res = ((self.priority_code_point as u16) << 13)
+            | (self.drop_elegible as u16) << 12
+            | self.vlan_id;
+        res.to_be_bytes().to_vec()
     }
 
     pub fn from_vec(data: &[u8]) -> Option<Option<Self>> {
@@ -26,17 +28,23 @@ impl Tag {
             return None;
         }
         let tpid = u16::from_be_bytes(data[0..2].try_into().ok()?);
-		
+
         Some(if tpid == 0x8100 {
-			if data.len() < 4 {
-				return None;
-			}
-			let tci = u16::from_be_bytes(data[0..2].try_into().ok()?);
-			Some(Self {
-				priority_code_point: (tci >> 13) as u8,
-				drop_elegible: (tci & (1 << 12)) != 0,
-				vlan_id: tci & 0x0fff,
-			})
-		} else { None })
+            if data.len() < 4 {
+                return None;
+            }
+            let tci = u16::from_be_bytes(data[0..2].try_into().ok()?);
+            Some(Self {
+                priority_code_point: (tci >> 13) as u8,
+                drop_elegible: (tci & (1 << 12)) != 0,
+                vlan_id: tci & 0x0fff,
+            })
+        } else {
+            None
+        })
+    }
+
+    pub const fn vlan_id(&self) -> u16 {
+        self.vlan_id
     }
 }

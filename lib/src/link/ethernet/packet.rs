@@ -115,11 +115,14 @@ impl EthernetPacket {
         let dot1q_tag = dot1q::Tag::from_vec(&data[offset..])?;
         if dot1q_tag.is_some() {
             offset += 4;
-            if data.len() < 18 { // Baby jumbo
-                return None
+            if data.len() < 18 {
+                // Baby jumbo
+                return None;
             }
         }
-        let ether_type = EtherType::from_u16(u16::from_be_bytes(data[offset..(offset+2)].try_into().ok()?));
+        let ether_type = EtherType::from_u16(u16::from_be_bytes(
+            data[offset..(offset + 2)].try_into().ok()?,
+        ));
         Some(Self {
             destination,
             source,
