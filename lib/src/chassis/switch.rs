@@ -43,7 +43,7 @@ pub enum PortType {
 }
 
 struct Port {
-    handle: JoinHandle<()>,
+    _handle: JoinHandle<()>,
     nic_handle: Arc<RwLock<NicHandle>>,
     port_type: PortType,
     sender: flume::Sender<EthernetPacket>,
@@ -161,7 +161,7 @@ impl Switch {
         let id = res.0;
         let self_inner = self.internal_clone();
         self.link_layer_processes.write().await.push(Port {
-            handle: tokio::spawn(async move {
+            _handle: tokio::spawn(async move {
                 let conn_rx = Arc::new(conn_rx);
                 let conn_task = move || {
                     let rx = conn_rx.clone();
@@ -342,10 +342,18 @@ impl Switch {
     }
 }
 
+// #[async_trait::async_trait]
+// impl crate::node::ports::Ports for Switch {
+// 	type PortsIter = Box<dyn Iterator<Item = Box<dyn crate::node::ports::Port>>>;
+// 	async fn ports(&self) -> Self::PortsIter {
+// 		Box::new(self.ports().await.into_iter().map(|x| Box::new(x) as Box<dyn crate::node::ports::Port>))
+// 	}
+// }
+
 pub async fn switch<A: MacAdminAuthority + Send>(
     ports: usize,
     mac_authority: &mut A,
-    port_type: PortType
+    port_type: PortType,
 ) -> Switch {
     let s = Switch::new(Duration::from_secs(5));
     for _ in 0..ports {

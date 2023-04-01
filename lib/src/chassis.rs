@@ -190,6 +190,10 @@ impl NicHandle {
             false
         }
     }
+
+    pub fn connected(&self) -> bool {
+        self.connected
+    }
 }
 
 impl Display for NicHandle {

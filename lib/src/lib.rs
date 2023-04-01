@@ -4,6 +4,7 @@ pub mod either;
 pub mod link;
 pub mod mac;
 pub mod network;
+pub mod node;
 pub mod process;
 pub mod route;
 pub mod transport;

@@ -88,6 +88,10 @@ impl EthernetPacket {
     pub const fn get_source(&self) -> Mac {
         self.source
     }
+    
+    pub fn swap_addr(&mut self) {
+        std::mem::swap(&mut self.source, &mut self.destination);
+    }
 
     pub const fn get_ether_type(&self) -> EtherType {
         self.ether_type
